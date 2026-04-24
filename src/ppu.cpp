@@ -75,7 +75,17 @@ ppu_2c02::ppu_2c02()
 	memset(mem, 0, 65536);
 
 	oam = new unsigned char[256];
-	memset(mem, 0, 256);
+	memset(oam, 0, 256);
+
+	reg_ctrl     = 0;
+	reg_mask     = 0;
+	reg_status   = 0;
+	reg_oam_addr = 0;
+	v       = 0;
+	t       = 0;
+	fine_x  = 0;
+	w       = 0;
+	data_buf = 0;
 }
 
 ppu_2c02::~ppu_2c02()
@@ -171,5 +181,102 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 
 bool ppu_2c02::nmi_enabled()
 {
-	return false;
+	return (reg_ctrl & 0x80) != 0;
+}
+
+unsigned char ppu_2c02::cpu_read(unsigned short addr)
+{
+	addr = 0x2000 + (addr & 0x0007);
+
+	switch (addr)
+	{
+	case 0x2002:  // PPUSTATUS
+	{
+		unsigned char result = reg_status;
+		reg_status &= 0x7F;  // clear vblank flag on read
+		w = 0;               // reset address latch
+		return result;
+	}
+	case 0x2004:  // OAMDATA
+		return oam[reg_oam_addr];
+	case 0x2007:  // PPUDATA
+	{
+		unsigned char result = data_buf;
+		data_buf = mem[v & 0x3FFF];
+		// Palette reads are not buffered
+		if ((v & 0x3FFF) >= 0x3F00)
+			result = data_buf;
+		v += (reg_ctrl & 0x04) ? 32 : 1;
+		return result;
+	}
+	default:
+		return 0;
+	}
+}
+
+void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
+{
+	addr = 0x2000 + (addr & 0x0007);
+
+	switch (addr)
+	{
+	case 0x2000:  // PPUCTRL
+		reg_ctrl = val;
+		t = (t & 0xF3FF) | ((val & 0x03) << 10);
+		break;
+	case 0x2001:  // PPUMASK
+		reg_mask = val;
+		break;
+	case 0x2003:  // OAMADDR
+		reg_oam_addr = val;
+		break;
+	case 0x2004:  // OAMDATA
+		oam[reg_oam_addr++] = val;
+		break;
+	case 0x2005:  // PPUSCROLL (2 writes)
+		if (w == 0)
+		{
+			t = (t & 0xFFE0) | (val >> 3);  // coarse X into t
+			fine_x = val & 0x07;            // fine X
+			w = 1;
+		}
+		else
+		{
+			t = (t & 0x8FFF) | ((val & 0x07) << 12);  // fine Y into t
+			t = (t & 0xFC1F) | ((val >> 3) << 5);      // coarse Y into t
+			w = 0;
+		}
+		break;
+	case 0x2006:  // PPUADDR (2 writes)
+		if (w == 0)
+		{
+			t = (t & 0x00FF) | ((val & 0x3F) << 8);
+			w = 1;
+		}
+		else
+		{
+			t = (t & 0xFF00) | val;
+			v = t;
+			w = 0;
+		}
+		break;
+	case 0x2007:  // PPUDATA
+		mem[v & 0x3FFF] = val;
+		v += (reg_ctrl & 0x04) ? 32 : 1;
+		break;
+	}
+}
+
+void ppu_2c02::set_vblank(bool vb)
+{
+	if (vb)
+		reg_status |= 0x80;
+	else
+		reg_status &= 0x7F;
+}
+
+void ppu_2c02::oam_dma(unsigned char* page_data)
+{
+	for (int i = 0; i < 256; i++)
+		oam[(reg_oam_addr + i) & 0xFF] = page_data[i];
 }

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "cpu.h"
+#include "ppu.h"
 
 #define OPERAND8 \
 	(*(mem + rpc + 1))
@@ -126,6 +127,7 @@ cpu_6502::cpu_6502()
 	mem = new unsigned char[65536];
 	memset(mem, 0, 65536);
 	cycle = 0;
+	ppu = nullptr;
 }
 
 cpu_6502::~cpu_6502()
@@ -148,6 +150,42 @@ void cpu_6502::load_prg_rom(unsigned char *prom, int rom_size)
 	memcpy(mem + 0xc000, prom, rom_size);
 
 	return;
+}
+
+void cpu_6502::set_ppu(ppu_2c02* p)
+{
+	ppu = p;
+}
+
+unsigned char cpu_6502::mem_read(unsigned short addr)
+{
+	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
+	if (addr >= 0x2000 && addr <= 0x3FFF)
+	{
+		if (ppu)
+			return ppu->cpu_read(addr);
+		return 0;
+	}
+	return mem[addr];
+}
+
+void cpu_6502::mem_write(unsigned short addr, unsigned char val)
+{
+	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
+	if (addr >= 0x2000 && addr <= 0x3FFF)
+	{
+		if (ppu)
+			ppu->cpu_write(addr, val);
+		return;
+	}
+	// OAM DMA
+	if (addr == 0x4014)
+	{
+		if (ppu)
+			ppu->oam_dma(mem + (val << 8));
+		return;
+	}
+	mem[addr] = val;
 }
 
 #define UNK 0
@@ -471,27 +509,27 @@ bool cpu_6502::step(bool log)
 		break;
 	case ADDR_ABSOLUTE:
 		op16 = OPERAND16;
-		temp = VAR_ABSOLUTE(op16);
+		temp = mem_read(op16);
 		break;
 	case ADDR_ABSOLUTE_X:
 		op16 = OPERAND16;
-		temp = VAR_ABSOLUTE_X(op16);
+		temp = mem_read(ADDRESS_ADD_X(op16));
 		if (PAGE_CROSSED(op16, ADDRESS_ADD_X(op16)))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
 	case ADDR_ABSOLUTE_Y:
 		op16 = OPERAND16;
-		temp = VAR_ABSOLUTE_Y(op16);
+		temp = mem_read(ADDRESS_ADD_Y(op16));
 		if (PAGE_CROSSED(op16, ADDRESS_ADD_Y(op16)))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
 	case ADDR_INDIRECT_X:
 		op8 = OPERAND8;
-		temp = VAR_INDIRECT_X(op8);
+		temp = mem_read(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)));
 		break;
 	case ADDR_INDIRECT_Y:
 		op8 = OPERAND8;
-		temp = VAR_INDIRECT_Y(op8);
+		temp = mem_read(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)));
 		if (PAGE_CROSSED(ADDRESS_ZERO_PAGE_WRAP(op8), ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8))))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
@@ -957,19 +995,19 @@ bool cpu_6502::step(bool log)
 			VAR_ZERO_PAGE_Y(op8) = temp_out;
 			break;
 		case ADDR_ABSOLUTE:
-			VAR_ABSOLUTE(op16) = temp_out;
+			mem_write(op16, temp_out);
 			break;
 		case ADDR_ABSOLUTE_X:
-			VAR_ABSOLUTE_X(op16) = temp_out;
+			mem_write(ADDRESS_ADD_X(op16), temp_out);
 			break;
 		case ADDR_ABSOLUTE_Y:
-			VAR_ABSOLUTE_Y(op16) = temp_out;
+			mem_write(ADDRESS_ADD_Y(op16), temp_out);
 			break;
 		case ADDR_INDIRECT_X:
-			VAR_INDIRECT_X(op8) = temp_out;
+			mem_write(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)), temp_out);
 			break;
 		case ADDR_INDIRECT_Y:
-			VAR_INDIRECT_Y(op8) = temp_out;
+			mem_write(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)), temp_out);
 			break;
 		default:
 			break;
@@ -991,5 +1029,9 @@ bool cpu_6502::step(bool log)
 
 void cpu_6502::nmi()
 {
-	printf("nmi %d\n", cycle);
+	STACK_PUSH_PC();
+	STACK_PUSH(rp & 0xEF);  // push P with B flag clear
+	SET_INTERRUPT(1);
+	rpc = *((unsigned short*)(mem + 0xFFFA));  // NMI vector at $FFFA/$FFFB
+	cycle += 7;
 }

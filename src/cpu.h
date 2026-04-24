@@ -1,5 +1,7 @@
 #pragma once
 
+class ppu_2c02;
+
 class cpu_6502
 {
 public:
@@ -8,13 +10,15 @@ public:
 
 public:
 	void load_prg_rom(unsigned char *prom, int rom_size);
-	//void disassemble(unsigned short start, unsigned short size);
+	void set_ppu(ppu_2c02* p);
 
 	void reset();
-	//void step_disassemble(char *pbuf);
 	bool step(bool log);
-
 	void nmi();
+
+private:
+	unsigned char  mem_read(unsigned short addr);
+	void           mem_write(unsigned short addr, unsigned char val);
 
 private:
 	unsigned short int rpc;
@@ -26,4 +30,5 @@ private:
 
 	unsigned char *mem;
 	unsigned int cycle;
+	ppu_2c02* ppu;
 };
