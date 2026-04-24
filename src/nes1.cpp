@@ -295,6 +295,11 @@ int main(int argc, char* argv[])
 			ppu.render(pScreenBits);
 			ppu.set_vblank(false);
 			InvalidateRect(hMainWindow, NULL, FALSE);
+
+			static int frame_count = 0;
+			++frame_count;
+			if (frame_count == 120)  // export at frame 120 (~2 seconds)
+				ppu.export_frame(pScreenBits, "frame_dump.txt");
 		}
 
 		result = cpu.step(true);

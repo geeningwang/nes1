@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ppu.h"
+#include <stdio.h>
 
 unsigned char nes_color[64 * 3] = {
 	0x75, 0x75, 0x75,
@@ -345,4 +346,90 @@ void ppu_2c02::oam_dma(unsigned char* page_data)
 {
 	for (int i = 0; i < 256; i++)
 		oam[(reg_oam_addr + i) & 0xFF] = page_data[i];
+}
+
+void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
+{
+	FILE* f = nullptr;
+	fopen_s(&f, filename, "w");
+	if (!f) return;
+
+	// --- PPU Registers ---
+	fprintf(f, "=== PPU Registers ===\n");
+	fprintf(f, "PPUCTRL  ($2000): %02X  (NMI:%d BGtable:%04X SPRtable:%04X inc:%d)\n",
+		reg_ctrl,
+		(reg_ctrl >> 7) & 1,
+		(reg_ctrl & 0x10) ? 0x1000 : 0x0000,
+		(reg_ctrl & 0x08) ? 0x1000 : 0x0000,
+		(reg_ctrl & 0x04) ? 32 : 1);
+	fprintf(f, "PPUMASK  ($2001): %02X  (BG:%d SPR:%d)\n",
+		reg_mask, (reg_mask >> 3) & 1, (reg_mask >> 4) & 1);
+	fprintf(f, "PPUSTATUS($2002): %02X  (VBL:%d)\n",
+		reg_status, (reg_status >> 7) & 1);
+	fprintf(f, "v=%04X  t=%04X  fine_x=%d  mirroring=%s\n\n",
+		v, t, fine_x, mirror_vertical ? "vertical" : "horizontal");
+
+	// --- Nametable dump ($2000-$23BF) ---
+	fprintf(f, "=== Nametable ($2000-$23BF, 32x30 tile IDs) ===\n");
+	for (int row = 0; row < 30; ++row)
+	{
+		for (int col = 0; col < 32; ++col)
+			fprintf(f, "%02X ", ppu_mem_read(0x2000 + row * 32 + col));
+		fprintf(f, "\n");
+	}
+
+	// --- Palette dump ($3F00-$3F1F) ---
+	fprintf(f, "\n=== Palette ($3F00-$3F1F) ===\n");
+	fprintf(f, "BG:  ");
+	for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", ppu_mem_read(0x3F00 + i));
+	fprintf(f, "\nSPR: ");
+	for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", ppu_mem_read(0x3F10 + i));
+	fprintf(f, "\n");
+
+	// --- Active sprites (OAM) ---
+	fprintf(f, "\n=== Active Sprites (OAM) ===\n");
+	fprintf(f, "  # |  Y   X  Tile Attr\n");
+	for (int i = 0; i < 64; ++i)
+	{
+		unsigned char sy = oam[i * 4 + 0];
+		unsigned char st = oam[i * 4 + 1];
+		unsigned char sa = oam[i * 4 + 2];
+		unsigned char sx = oam[i * 4 + 3];
+		if (sy < 0xEF)  // visible
+			fprintf(f, " %2d | %3d %3d   %02X   %02X\n", i, sy + 1, sx, st, sa);
+	}
+
+	// --- ASCII art (1 char per 8x8 tile, brightness from pixel buffer) ---
+	fprintf(f, "\n=== ASCII Screen (32x30 tiles) ===\n");
+	const char* shades = " .:-=+*#%%@";
+	int nshades = 10;
+	if (pScreenBits)
+	{
+		for (int ty = 0; ty < 30; ++ty)
+		{
+			for (int tx = 0; tx < 32; ++tx)
+			{
+				// Average brightness of the 8x8 tile
+				int sum = 0;
+				for (int py = 0; py < 8; ++py)
+					for (int px = 0; px < 8; ++px)
+					{
+						int idx = ((ty * 8 + py) * 256 + (tx * 8 + px)) * 4;
+						sum += pScreenBits[idx + 0];  // B
+						sum += pScreenBits[idx + 1];  // G
+						sum += pScreenBits[idx + 2];  // R
+					}
+				int brightness = sum / (64 * 3);  // 0-255
+				int si = brightness * (nshades - 1) / 255;
+				fprintf(f, "%c", shades[si]);
+			}
+			fprintf(f, "\n");
+		}
+	}
+	else
+	{
+		fprintf(f, "(no pixel buffer - render first)\n");
+	}
+
+	fclose(f);
 }
