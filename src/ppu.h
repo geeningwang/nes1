@@ -24,6 +24,14 @@ public:
 	// Set/clear the vblank flag in PPUSTATUS
 	void set_vblank(bool vb);
 
+	// Set nametable mirroring (false=horizontal, true=vertical)
+	void set_mirroring(bool vertical);
+
+private:
+	unsigned short mirror_nt_addr(unsigned short addr);
+	unsigned char  ppu_mem_read(unsigned short addr);
+	void           ppu_mem_write(unsigned short addr, unsigned char val);
+
 private:
 	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits);
 
@@ -43,4 +51,5 @@ private:
 	unsigned char  fine_x;   // fine X scroll (3-bit)
 	unsigned char  w;        // write latch (0 or 1)
 	unsigned char  data_buf; // $2007 read buffer
+	bool           mirror_vertical; // false=horizontal, true=vertical
 };

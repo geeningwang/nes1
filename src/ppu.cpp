@@ -86,12 +86,75 @@ ppu_2c02::ppu_2c02()
 	fine_x  = 0;
 	w       = 0;
 	data_buf = 0;
+	mirror_vertical = false;
 }
 
 ppu_2c02::~ppu_2c02()
 {
 	delete[] mem;
 	delete[] oam;
+}
+
+void ppu_2c02::set_mirroring(bool vertical)
+{
+	mirror_vertical = vertical;
+}
+
+// Map a nametable address ($2000-$2FFF) to the physical 2KB VRAM
+unsigned short ppu_2c02::mirror_nt_addr(unsigned short addr)
+{
+	addr &= 0x2FFF;  // ignore $3000-$3EFF mirror
+	unsigned short nt = (addr - 0x2000) / 0x400;  // which nametable (0-3)
+	unsigned short off = (addr - 0x2000) % 0x400;  // offset within nametable
+	if (mirror_vertical)
+	{
+		// Vertical: $2000=$2800, $2400=$2C00
+		return 0x2000 + (nt & 0x01) * 0x400 + off;
+	}
+	else
+	{
+		// Horizontal: $2000=$2400, $2800=$2C00
+		return 0x2000 + ((nt >> 1) & 0x01) * 0x400 + off;
+	}
+}
+
+unsigned char ppu_2c02::ppu_mem_read(unsigned short addr)
+{
+	addr &= 0x3FFF;
+	if (addr >= 0x2000 && addr <= 0x3EFF)
+		return mem[mirror_nt_addr(addr)];
+	if (addr >= 0x3F00)
+	{
+		addr = 0x3F00 + (addr & 0x1F);
+		// Mirrored palette entries
+		if (addr == 0x3F10) addr = 0x3F00;
+		if (addr == 0x3F14) addr = 0x3F04;
+		if (addr == 0x3F18) addr = 0x3F08;
+		if (addr == 0x3F1C) addr = 0x3F0C;
+		return mem[addr];
+	}
+	return mem[addr];
+}
+
+void ppu_2c02::ppu_mem_write(unsigned short addr, unsigned char val)
+{
+	addr &= 0x3FFF;
+	if (addr >= 0x2000 && addr <= 0x3EFF)
+	{
+		mem[mirror_nt_addr(addr)] = val;
+		return;
+	}
+	if (addr >= 0x3F00)
+	{
+		addr = 0x3F00 + (addr & 0x1F);
+		if (addr == 0x3F10) addr = 0x3F00;
+		if (addr == 0x3F14) addr = 0x3F04;
+		if (addr == 0x3F18) addr = 0x3F08;
+		if (addr == 0x3F1C) addr = 0x3F0C;
+		mem[addr] = val;
+		return;
+	}
+	mem[addr] = val;
 }
 
 void ppu_2c02::load_chr_rom(unsigned char* prom, int rom_size)
@@ -148,15 +211,16 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 	{
 		for (int x = 0; x < 32; ++x)
 		{
-			unsigned char name = mem[0x2000 + y * 32 + x];
+			unsigned char name = ppu_mem_read(0x2000 + y * 32 + x);
 
-			// always use attribute table 0
-			unsigned char att = mem[0x23c0 + ((y * 32) / 4) + (x / 4)];
+			// Attribute table: each byte covers 4x4 tiles
+			unsigned char att = ppu_mem_read(0x23c0 + (y / 4) * 8 + (x / 4));
 			unsigned int square = (y & 0x02) + ((x >> 1) & 0x01);
 			unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
 
-			// always use pattern table 0
-			unsigned char* chr = mem + 0x0000 + name * 16LL;
+			// BG pattern table: PPUCTRL bit 4 selects $0000 or $1000
+			unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
+			unsigned char* chr = mem + bg_base + name * 16;
 
 			draw_chr(chr, x * 8, y * 8, color_bit23, pScreenBits);
 		}
@@ -169,9 +233,11 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 		unsigned char y = oam[i * 4 + 0] + 1;
 		unsigned char name_index = oam[i * 4 + 1];
 		unsigned char attribute = oam[i * 4 + 2];
-		unsigned char color_bit23 = (attribute & 0x03) << 2;
+		unsigned char color_bit23 = ((attribute & 0x03) << 2) | 0x10;  // sprite palette offset
 
-		unsigned char* chr = mem + 0x0000 + name_index * 16LL;
+		// Sprite pattern table: PPUCTRL bit 3 selects $0000 or $1000
+		unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
+		unsigned char* chr = mem + spr_base + name_index * 16;
 
 		draw_chr(chr, x, y, color_bit23, pScreenBits);
 	}
@@ -202,7 +268,7 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 	case 0x2007:  // PPUDATA
 	{
 		unsigned char result = data_buf;
-		data_buf = mem[v & 0x3FFF];
+		data_buf = ppu_mem_read(v);
 		// Palette reads are not buffered
 		if ((v & 0x3FFF) >= 0x3F00)
 			result = data_buf;
@@ -261,7 +327,7 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		}
 		break;
 	case 0x2007:  // PPUDATA
-		mem[v & 0x3FFF] = val;
+		ppu_mem_write(v, val);
 		v += (reg_ctrl & 0x04) ? 32 : 1;
 		break;
 	}

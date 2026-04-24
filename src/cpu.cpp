@@ -159,6 +159,9 @@ void cpu_6502::set_ppu(ppu_2c02* p)
 
 unsigned char cpu_6502::mem_read(unsigned short addr)
 {
+	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
+	if (addr < 0x2000)
+		return mem[addr & 0x07FF];
 	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
 	if (addr >= 0x2000 && addr <= 0x3FFF)
 	{
@@ -171,6 +174,12 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 
 void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 {
+	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
+	if (addr < 0x2000)
+	{
+		mem[addr & 0x07FF] = val;
+		return;
+	}
 	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
 	if (addr >= 0x2000 && addr <= 0x3FFF)
 	{
@@ -182,7 +191,7 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 	if (addr == 0x4014)
 	{
 		if (ppu)
-			ppu->oam_dma(mem + (val << 8));
+			ppu->oam_dma(mem + ((val & 0x07) << 8));  // DMA from mirrored RAM
 		return;
 	}
 	mem[addr] = val;
