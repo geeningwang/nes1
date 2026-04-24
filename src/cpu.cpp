@@ -402,14 +402,16 @@ bool cpu_6502::step(bool log)
 	// output CPU status
 	const int statusbuf_size = 100;
 	char statusbuf[statusbuf_size];
-	sprintf_s(statusbuf, statusbuf_size, "A:%02X X:%02X Y:%02X P:%02X SP:%02X CYC:%d", ra, rx, ry, rp, rsp, cycle);
-
-	// output the address
 	const int pbuf_size = 100;
 	char pbuf[pbuf_size];
-	size_t bufc = sprintf_s(pbuf, pbuf_size, "%04X  ", rpc);
+	size_t bufc = 0;
 
-	// print the instruction hex code
+	if (log)
+	{
+		sprintf_s(statusbuf, statusbuf_size, "A:%02X X:%02X Y:%02X P:%02X SP:%02X CYC:%d", ra, rx, ry, rp, rsp, cycle);
+		bufc = sprintf_s(pbuf, pbuf_size, "%04X  ", rpc);
+
+		// print the instruction hex code
 	for (int j = 0; j < 3; ++j)
 	{
 		if (j < instruction_size)
@@ -471,16 +473,19 @@ bool cpu_6502::step(bool log)
 		assert(false);
 		break;
 	}
+	}  // end if (log)
 
 	if (instruction == UNK || instruction == BRK)
 	{
-		// output whole line
-		const size_t status_start_col = 48;
-		for (size_t i = 0; i < status_start_col - bufc; ++i)
-			*(pbuf + bufc + i) = ' ';
-		*(pbuf + status_start_col) = '\0';
-
-		printf("%s%s\n", pbuf, statusbuf);
+		if (log)
+		{
+			// output whole line
+			const size_t status_start_col = 48;
+			for (size_t i = 0; i < status_start_col - bufc; ++i)
+				*(pbuf + bufc + i) = ' ';
+			*(pbuf + status_start_col) = '\0';
+			printf("%s%s\n", pbuf, statusbuf);
+		}
 		return false;
 	}
 
@@ -1026,12 +1031,15 @@ bool cpu_6502::step(bool log)
 	cycle += instruction_cycles;
 
 	// output whole line
-	const size_t status_start_col = 48;
-	for (size_t i = 0; i < status_start_col - bufc; ++i)
-		*(pbuf + bufc + i) = ' ';
-	*(pbuf + status_start_col) = '\0';
+	if (log)
+	{
+		const size_t status_start_col = 48;
+		for (size_t i = 0; i < status_start_col - bufc; ++i)
+			*(pbuf + bufc + i) = ' ';
+		*(pbuf + status_start_col) = '\0';
 
-	printf("%s%s\n", pbuf, statusbuf);
+		printf("%s%s\n", pbuf, statusbuf);
+	}
 
 	return true;
 }

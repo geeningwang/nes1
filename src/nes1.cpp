@@ -289,11 +289,26 @@ int main(int argc, char* argv[])
 
 		if (frameIntervalElapsed())
 		{
+			// NTSC NES: 29829 CPU cycles per frame
+			// ~27384 cycles for visible scanlines, ~2445 for vblank period
+			unsigned int frame_start = cpu.cycle;
+
+			// Run visible scanlines
+			while (result && (cpu.cycle - frame_start) < 27384u)
+				result = cpu.step(false);
+
+			// Raise vblank, trigger NMI if enabled
 			ppu.set_vblank(true);
 			if (ppu.nmi_enabled())
 				cpu.nmi();
-			ppu.render(pScreenBits);
+
+			// Run vblank period
+			while (result && (cpu.cycle - frame_start) < 29829u)
+				result = cpu.step(false);
+
+			// End vblank, render
 			ppu.set_vblank(false);
+			ppu.render(pScreenBits);
 			InvalidateRect(hMainWindow, NULL, FALSE);
 
 			static int frame_count = 0;
@@ -301,9 +316,10 @@ int main(int argc, char* argv[])
 			if (frame_count == 120)  // export at frame 120 (~2 seconds)
 				ppu.export_frame(pScreenBits, "frame_dump.txt");
 		}
-
-		result = cpu.step(true);
-		Sleep(0);
+		else
+		{
+			Sleep(0);
+		}
 	}
 
     return 0;

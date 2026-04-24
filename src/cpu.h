@@ -16,6 +16,9 @@ public:
 	bool step(bool log);
 	void nmi();
 
+public:
+	unsigned int cycle;
+
 private:
 	unsigned char  mem_read(unsigned short addr);
 	void           mem_write(unsigned short addr, unsigned char val);
@@ -29,6 +32,5 @@ private:
 	unsigned char rp;
 
 	unsigned char *mem;
-	unsigned int cycle;
 	ppu_2c02* ppu;
 };
