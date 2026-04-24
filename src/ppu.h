@@ -27,6 +27,9 @@ public:
 	// Set nametable mirroring (false=horizontal, true=vertical)
 	void set_mirroring(bool vertical);
 
+	// Dump nametable, palette, and ASCII screen art to a text file
+	void export_frame(unsigned char* pScreenBits, const char* filename);
+
 private:
 	unsigned short mirror_nt_addr(unsigned short addr);
 	unsigned char  ppu_mem_read(unsigned short addr);
