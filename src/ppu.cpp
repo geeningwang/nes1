@@ -174,7 +174,7 @@ void ppu_2c02::load_chr_rom(unsigned char* prom, int rom_size)
 	return;
 }
 
-void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char *pScreenBits)
+void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char *pScreenBits, bool is_sprite)
 {
 	if (x == 0xff && y == 0xff)
 	{
@@ -189,8 +189,11 @@ void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bi
 			unsigned char color_bit1 = ((*(chr + 8 + j) >> (7 - i)) & 1) << 1;
 
 			unsigned char color = color_bit23 | color_bit1 | color_bit0;  // 4 bit color in palette
-			// When both CHR bit-planes are 0 the pixel is transparent → always use universal BG color ($3F00)
-			if ((color & 0x03) == 0) color = 0;
+			// When both CHR bit-planes are 0 the pixel is transparent
+			if ((color & 0x03) == 0) {
+				if (is_sprite) continue;  // sprite transparent pixel: leave background as-is
+				color = 0;                // background: use universal BG color ($3F00)
+			}
 			color = ppu_mem_read(0x3f00 + color);  // 6 bit NES color
 
 			unsigned index = (y + j) * 256 + (x + i);
@@ -259,7 +262,7 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 			unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
 			unsigned char* chr = mem + spr_base + name_index * 16;
 
-			draw_chr(chr, sx, sy, color_bit23, pScreenBits);
+			draw_chr(chr, sx, sy, color_bit23, pScreenBits, true);
 		}
 	}
 

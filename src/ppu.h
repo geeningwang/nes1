@@ -37,7 +37,7 @@ private:
 	void           ppu_mem_write(unsigned short addr, unsigned char val);
 
 private:
-	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits);
+	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false);
 
 private:
 	unsigned char* mem;
