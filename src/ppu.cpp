@@ -189,7 +189,9 @@ void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bi
 			unsigned char color_bit1 = ((*(chr + 8 + j) >> (7 - i)) & 1) << 1;
 
 			unsigned char color = color_bit23 | color_bit1 | color_bit0;  // 4 bit color in palette
-			color = mem[0x3f00 + color];  // 6 bit NES color
+			// When both CHR bit-planes are 0 the pixel is transparent → always use universal BG color ($3F00)
+			if ((color & 0x03) == 0) color = 0;
+			color = ppu_mem_read(0x3f00 + color);  // 6 bit NES color
 
 			unsigned index = (y + j) * 256 + (x + i);
 			pScreenBits[index * 4 + 0] = nes_color[color * 3 + 2];
@@ -207,40 +209,58 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 	if (!pScreenBits)
 		return;
 
-	// Draw background, per tile
-	for (int y = 0; y < 30; ++y)
+	// Fill with universal background color first
+	unsigned char bg_color = ppu_mem_read(0x3F00);
+	for (int p = 0; p < SCREEN_WIDTH * SCREEN_HEIGHT; ++p)
 	{
-		for (int x = 0; x < 32; ++x)
+		pScreenBits[p * 4 + 0] = nes_color[bg_color * 3 + 2];
+		pScreenBits[p * 4 + 1] = nes_color[bg_color * 3 + 1];
+		pScreenBits[p * 4 + 2] = nes_color[bg_color * 3 + 0];
+		pScreenBits[p * 4 + 3] = 0;
+	}
+
+	// Draw background (PPUMASK bit 3)
+	if (reg_mask & 0x08)
+	{
+		for (int y = 0; y < 30; ++y)
 		{
-			unsigned char name = ppu_mem_read(0x2000 + y * 32 + x);
+			for (int x = 0; x < 32; ++x)
+			{
+				unsigned char name = ppu_mem_read(0x2000 + y * 32 + x);
 
-			// Attribute table: each byte covers 4x4 tiles
-			unsigned char att = ppu_mem_read(0x23c0 + (y / 4) * 8 + (x / 4));
-			unsigned int square = (y & 0x02) + ((x >> 1) & 0x01);
-			unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
+				// Attribute table: each byte covers 4x4 tiles
+				unsigned char att = ppu_mem_read(0x23c0 + (y / 4) * 8 + (x / 4));
+				unsigned int square = (y & 0x02) + ((x >> 1) & 0x01);
+				unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
 
-			// BG pattern table: PPUCTRL bit 4 selects $0000 or $1000
-			unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
-			unsigned char* chr = mem + bg_base + name * 16;
+				// BG pattern table: PPUCTRL bit 4 selects $0000 or $1000
+				unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
+				unsigned char* chr = mem + bg_base + name * 16;
 
-			draw_chr(chr, x * 8, y * 8, color_bit23, pScreenBits);
+				draw_chr(chr, x * 8, y * 8, color_bit23, pScreenBits);
+			}
 		}
 	}
 
-	// Draw sprites
-	for (int i = 63; i >= 0; --i)
+	// Draw sprites (PPUMASK bit 4), back-to-front so sprite 0 is on top
+	if (reg_mask & 0x10)
 	{
-		unsigned char x = oam[i * 4 + 3];
-		unsigned char y = oam[i * 4 + 0] + 1;
-		unsigned char name_index = oam[i * 4 + 1];
-		unsigned char attribute = oam[i * 4 + 2];
-		unsigned char color_bit23 = ((attribute & 0x03) << 2) | 0x10;  // sprite palette offset
+		for (int i = 63; i >= 0; --i)
+		{
+			unsigned char sx = oam[i * 4 + 3];
+			unsigned char sy = oam[i * 4 + 0] + 1;
+			unsigned char name_index = oam[i * 4 + 1];
+			unsigned char attribute = oam[i * 4 + 2];
+			unsigned char color_bit23 = ((attribute & 0x03) << 2) | 0x10;  // sprite palette ($3F10)
 
-		// Sprite pattern table: PPUCTRL bit 3 selects $0000 or $1000
-		unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
-		unsigned char* chr = mem + spr_base + name_index * 16;
+			if (sy >= SCREEN_HEIGHT) continue;  // off-screen
 
-		draw_chr(chr, x, y, color_bit23, pScreenBits);
+			// Sprite pattern table: PPUCTRL bit 3 selects $0000 or $1000
+			unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
+			unsigned char* chr = mem + spr_base + name_index * 16;
+
+			draw_chr(chr, sx, sy, color_bit23, pScreenBits);
+		}
 	}
 
 	return;
@@ -432,4 +452,55 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
 	}
 
 	fclose(f);
+
+	// Save BMP screenshot
+	if (pScreenBits)
+	{
+		// Build .bmp filename by replacing extension
+		char bmp_filename[512];
+		strncpy_s(bmp_filename, filename, sizeof(bmp_filename) - 1);
+		char* dot = strrchr(bmp_filename, '.');
+		if (dot) strcpy_s(dot, 5, ".bmp");
+		else strncat_s(bmp_filename, sizeof(bmp_filename), ".bmp", 4);
+
+		FILE* bf = nullptr;
+		fopen_s(&bf, bmp_filename, "wb");
+		if (bf)
+		{
+			// BMP file header (14 bytes)
+			unsigned int pix_size = SCREEN_WIDTH * SCREEN_HEIGHT * 4;
+			unsigned int file_size = 14 + 40 + pix_size;
+			unsigned char bfh[14] = {
+				'B','M',
+				(unsigned char)(file_size),(unsigned char)(file_size>>8),(unsigned char)(file_size>>16),(unsigned char)(file_size>>24),
+				0,0,0,0,
+				54,0,0,0
+			};
+			fwrite(bfh, 1, 14, bf);
+
+			// BITMAPINFOHEADER (40 bytes) — negative height = top-down
+			int bih_w = SCREEN_WIDTH;
+			int bih_h = -SCREEN_HEIGHT;
+			unsigned short planes = 1, bits = 32;
+			unsigned int comp = 0, img_sz = 0, clr = 0;
+			int ppm = 2835;
+			unsigned int hdr = 40;
+			unsigned char dib[40];
+			memcpy(dib+ 0, &hdr,   4);
+			memcpy(dib+ 4, &bih_w, 4);
+			memcpy(dib+ 8, &bih_h, 4);
+			memcpy(dib+12, &planes,2);
+			memcpy(dib+14, &bits,  2);
+			memcpy(dib+16, &comp,  4);
+			memcpy(dib+20, &img_sz,4);
+			memcpy(dib+24, &ppm,   4);
+			memcpy(dib+28, &ppm,   4);
+			memcpy(dib+32, &clr,   4);
+			memcpy(dib+36, &clr,   4);
+			fwrite(dib, 1, 40, bf);
+
+			fwrite(pScreenBits, 1, pix_size, bf);
+			fclose(bf);
+		}
+	}
 }
