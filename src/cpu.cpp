@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "cpu.h"
 #include "ppu.h"
+#include "apu.h"
 
 #define OPERAND8 \
 	(*(mem + rpc + 1))
@@ -128,6 +129,7 @@ cpu_6502::cpu_6502()
 	memset(mem, 0, 65536);
 	cycle = 0;
 	ppu = nullptr;
+	apu = nullptr;
 	joypad1_state = 0;
 	joypad1_strobe = false;
 	joypad1_shift = 0;
@@ -160,6 +162,11 @@ void cpu_6502::set_ppu(ppu_2c02* p)
 	ppu = p;
 }
 
+void cpu_6502::set_apu(apu_2a03* a)
+{
+	apu = a;
+}
+
 unsigned char cpu_6502::mem_read(unsigned short addr)
 {
 	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
@@ -180,6 +187,12 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 		unsigned char bit = joypad1_shift & 1;
 		joypad1_shift >>= 1;
 		return bit;
+	}
+	// APU status
+	if (addr == 0x4015)
+	{
+		if (apu) return apu->read_status();
+		return 0;
 	}
 	// Joypad 2 (not connected)
 	if (addr == 0x4017)
@@ -208,6 +221,13 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 		if (ppu)
 			ppu->oam_dma(mem + ((val & 0x07) << 8));  // DMA from mirrored RAM
 		return;
+	}
+	// APU registers
+	if ((addr >= 0x4000 && addr <= 0x4013) || addr == 0x4015 || addr == 0x4017)
+	{
+		if (apu) apu->write(addr, val);
+		// Also handle $4017 as frame counter (already done in apu)
+		// Joypad strobe is at $4016, handled below
 	}
 	// Joypad strobe
 	if (addr == 0x4016)

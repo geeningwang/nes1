@@ -1,6 +1,7 @@
 #pragma once
 
 class ppu_2c02;
+class apu_2a03;
 
 class cpu_6502
 {
@@ -11,6 +12,7 @@ public:
 public:
 	void load_prg_rom(unsigned char *prom, int rom_size);
 	void set_ppu(ppu_2c02* p);
+	void set_apu(apu_2a03* a);
 
 	void reset();
 	bool step(bool log);
@@ -40,4 +42,5 @@ private:
 
 	unsigned char *mem;
 	ppu_2c02* ppu;
+	apu_2a03* apu;
 };

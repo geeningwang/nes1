@@ -4,6 +4,14 @@
 #include "stdafx.h"
 #include "cpu.h"
 #include "ppu.h"
+#include "apu.h"
+#include <xaudio2.h>
+#include <vector>
+#pragma comment(lib, "xaudio2.lib")
+#include "apu.h"
+#include <xaudio2.h>
+#include <vector>
+#pragma comment(lib, "xaudio2.lib")
 
 unsigned char prg_rom[16384];
 unsigned char chr_rom[8192];
@@ -22,6 +30,64 @@ std::deque<LONGLONG> time_paint;
 
 cpu_6502 cpu;
 ppu_2c02 ppu;
+apu_2a03 apu;
+
+// ─── XAudio2 audio output ───────────────────────────────
+// 44100 Hz mono 16-bit, double-buffered (735 samples per NTSC frame)
+static const int AUDIO_SAMPLE_RATE = 44100;
+static const int AUDIO_SAMPLES_PER_FRAME = 735;  // 44100/60
+static const int AUDIO_BUFFER_COUNT = 3;         // triple-buffer
+
+struct AudioSystem {
+    IXAudio2*               xaudio  = nullptr;
+    IXAudio2MasteringVoice* master  = nullptr;
+    IXAudio2SourceVoice*    source  = nullptr;
+    // Ring of PCM buffers, each holds one frame of samples
+    short buf[AUDIO_BUFFER_COUNT][AUDIO_SAMPLES_PER_FRAME * 2]; // *2 for safety
+    int   buf_idx = 0;
+
+    bool init() {
+        if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) return false;
+        if (FAILED(XAudio2Create(&xaudio, 0, XAUDIO2_DEFAULT_PROCESSOR))) return false;
+        if (FAILED(xaudio->CreateMasteringVoice(&master))) return false;
+
+        WAVEFORMATEX wfx = {};
+        wfx.wFormatTag      = WAVE_FORMAT_PCM;
+        wfx.nChannels       = 1;
+        wfx.nSamplesPerSec  = AUDIO_SAMPLE_RATE;
+        wfx.wBitsPerSample  = 16;
+        wfx.nBlockAlign     = wfx.nChannels * wfx.wBitsPerSample / 8;
+        wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+        if (FAILED(xaudio->CreateSourceVoice(&source, &wfx))) return false;
+        source->Start();
+        return true;
+    }
+
+    void submit(const std::vector<short>& samples) {
+        if (!source) return;
+        XAUDIO2_VOICE_STATE state;
+        source->GetState(&state);
+        // If too many buffers queued, drop this frame (avoid runaway latency)
+        if (state.BuffersQueued >= AUDIO_BUFFER_COUNT) return;
+
+        int count = (int)samples.size();
+        if (count > AUDIO_SAMPLES_PER_FRAME * 2) count = AUDIO_SAMPLES_PER_FRAME * 2;
+        memcpy(buf[buf_idx], samples.data(), count * sizeof(short));
+
+        XAUDIO2_BUFFER xbuf = {};
+        xbuf.AudioBytes = count * sizeof(short);
+        xbuf.pAudioData = (const BYTE*)buf[buf_idx];
+        source->SubmitSourceBuffer(&xbuf);
+        buf_idx = (buf_idx + 1) % AUDIO_BUFFER_COUNT;
+    }
+
+    void destroy() {
+        if (source) { source->DestroyVoice(); source = nullptr; }
+        if (master) { master->DestroyVoice(); master = nullptr; }
+        if (xaudio) { xaudio->Release(); xaudio = nullptr; }
+        CoUninitialize();
+    }
+} g_audio;
 
 void create_dibsection()
 {
@@ -305,6 +371,16 @@ int main(int argc, char* argv[])
 	ppu.load_chr_rom(chr_rom, 8192);
         ppu.set_mirroring((header[6] & 0x01) != 0);
         cpu.set_ppu(&ppu);
+	cpu.set_apu(&apu);
+
+	// Initialize audio
+	if (!g_audio.init())
+		printf("Warning: XAudio2 init failed, no sound.\n");
+	cpu.set_apu(&apu);
+
+	// Initialize audio
+	if (!g_audio.init())
+		printf("Warning: XAudio2 init failed, no sound.\n");
 
 	// Run!
 	bool result = true;
@@ -326,10 +402,15 @@ int main(int argc, char* argv[])
 			// NTSC NES: 29829 CPU cycles per frame
 			// ~27384 cycles for visible scanlines, ~2445 for vblank period
 			unsigned int frame_start = cpu.cycle;
+			std::vector<short> audio_samples;
+			audio_samples.reserve(AUDIO_SAMPLES_PER_FRAME + 10);
 
 			// Run visible scanlines
-			while (result && (cpu.cycle - frame_start) < 27384u)
+			while (result && (cpu.cycle - frame_start) < 27384u) {
+				unsigned int cyc_before = cpu.cycle;
 				result = cpu.step(false);
+				apu.tick_n(cpu.cycle - cyc_before, audio_samples);
+			}
 
 			// Raise vblank, trigger NMI if enabled
 			ppu.set_vblank(true);
@@ -337,18 +418,19 @@ int main(int argc, char* argv[])
 				cpu.nmi();
 
 			// Run vblank period
-			while (result && (cpu.cycle - frame_start) < 29829u)
+			while (result && (cpu.cycle - frame_start) < 29829u) {
+				unsigned int cyc_before = cpu.cycle;
 				result = cpu.step(false);
+				apu.tick_n(cpu.cycle - cyc_before, audio_samples);
+			}
 
-			// End vblank, render
+			// End vblank, render video
 			ppu.set_vblank(false);
 			ppu.render(pScreenBits);
 			InvalidateRect(hMainWindow, NULL, FALSE);
 
-			static int frame_count = 0;
-			++frame_count;
-			if (frame_count == 120)  // export at frame 120 (~2 seconds)
-				ppu.export_frame(pScreenBits, "frame_dump.txt");
+			// Submit audio for this frame
+			g_audio.submit(audio_samples);
 		}
 		else
 		{
@@ -356,6 +438,7 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	g_audio.destroy();
     return 0;
 }
 
