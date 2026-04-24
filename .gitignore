@@ -18,3 +18,11 @@ src/Release/
 
 # VS internal
 .vs/
+
+# Debug/dump output files
+src/frame_dump.bmp
+src/frame_dump.txt
+src/frame_dump.png
+src/ppu_trace.txt
+src/vram_debug.txt
+src/vram_log.txt
