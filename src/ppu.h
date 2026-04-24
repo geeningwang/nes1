@@ -2,6 +2,7 @@
 
 #define SCREEN_WIDTH 256
 #define SCREEN_HEIGHT 240
+#define DISPLAY_SCALE 2
 
 class ppu_2c02
 {

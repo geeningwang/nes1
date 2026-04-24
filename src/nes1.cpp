@@ -20,6 +20,9 @@ unsigned char* pScreenBits;
 
 std::deque<LONGLONG> time_paint;
 
+cpu_6502 cpu;
+ppu_2c02 ppu;
+
 void create_dibsection()
 {
 	// Fill in the BITMAPINFOHEADER
@@ -67,6 +70,37 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		PostQuitMessage(0);
 		return 0;
 
+	case WM_KEYDOWN:
+	{
+		switch (wParam)
+		{
+		case 'Z':           cpu.joypad1_state |= 0x01; break;  // A
+		case 'X':           cpu.joypad1_state |= 0x02; break;  // B
+		case VK_SHIFT:      cpu.joypad1_state |= 0x04; break;  // Select
+		case VK_RETURN:     cpu.joypad1_state |= 0x08; break;  // Start
+		case VK_UP:         cpu.joypad1_state |= 0x10; break;  // Up
+		case VK_DOWN:       cpu.joypad1_state |= 0x20; break;  // Down
+		case VK_LEFT:       cpu.joypad1_state |= 0x40; break;  // Left
+		case VK_RIGHT:      cpu.joypad1_state |= 0x80; break;  // Right
+		}
+		return 0;
+	}
+	case WM_KEYUP:
+	{
+		switch (wParam)
+		{
+		case 'Z':           cpu.joypad1_state &= ~0x01; break;
+		case 'X':           cpu.joypad1_state &= ~0x02; break;
+		case VK_SHIFT:      cpu.joypad1_state &= ~0x04; break;
+		case VK_RETURN:     cpu.joypad1_state &= ~0x08; break;
+		case VK_UP:         cpu.joypad1_state &= ~0x10; break;
+		case VK_DOWN:       cpu.joypad1_state &= ~0x20; break;
+		case VK_LEFT:       cpu.joypad1_state &= ~0x40; break;
+		case VK_RIGHT:      cpu.joypad1_state &= ~0x80; break;
+		}
+		return 0;
+	}
+
 	case WM_PAINT:
 	{
 		PAINTSTRUCT ps;
@@ -75,10 +109,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		// Create memory DC
 		HDC memorydc = CreateCompatibleDC(hdc);
 		HGDIOBJ oldBitmap = SelectObject(memorydc, hDibSection);
-		BitBlt(hdc, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, memorydc, 0, 0, SRCCOPY);
-		BitBlt(hdc, SCREEN_WIDTH + 1, 0, SCREEN_WIDTH, SCREEN_HEIGHT, memorydc, 0, 0, SRCCOPY);
-		BitBlt(hdc, 0, SCREEN_HEIGHT + 1, SCREEN_WIDTH, SCREEN_HEIGHT, memorydc, 0, 0, SRCCOPY);
-		BitBlt(hdc, SCREEN_WIDTH + 1, SCREEN_HEIGHT + 1, SCREEN_WIDTH, SCREEN_HEIGHT, memorydc, 0, 0, SRCCOPY);
+		StretchBlt(hdc, 0, 0, SCREEN_WIDTH * DISPLAY_SCALE, SCREEN_HEIGHT * DISPLAY_SCALE, memorydc, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SRCCOPY);
 		SelectObject(memorydc, oldBitmap);
 		DeleteDC(memorydc);
 
@@ -170,7 +201,7 @@ void initMainWindow()
 	int xdiff = (rectWindow.right - rectWindow.left) - (rectClient.right - rectClient.left);
 	int ydiff = (rectWindow.bottom - rectWindow.top) - (rectClient.bottom - rectClient.top);
 
-	SetWindowPos(hMainWindow, HWND_TOP, 100, 100, SCREEN_WIDTH + xdiff, SCREEN_HEIGHT + ydiff, SWP_SHOWWINDOW);
+	SetWindowPos(hMainWindow, HWND_TOP, 100, 100, SCREEN_WIDTH * DISPLAY_SCALE + xdiff, SCREEN_HEIGHT * DISPLAY_SCALE + ydiff, SWP_SHOWWINDOW);
 //	ShowWindow(hMainWindow, SW_SHOWNORMAL);
 }
 
@@ -263,11 +294,9 @@ int main(int argc, char* argv[])
 	fread(chr_rom, 1, 8192, fp);
 	fclose(fp);
 
-	cpu_6502 cpu;
 	cpu.load_prg_rom(prg_rom, 16384);
 	cpu.reset();
 
-	ppu_2c02 ppu;
 	ppu.load_chr_rom(chr_rom, 8192);
         ppu.set_mirroring((header[6] & 0x01) != 0);
         cpu.set_ppu(&ppu);
