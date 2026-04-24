@@ -74,9 +74,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 		switch (wParam)
 		{
-		case 'Z':           cpu.joypad1_state |= 0x01; break;  // A
-		case 'X':           cpu.joypad1_state |= 0x02; break;  // B
-		case VK_SHIFT:      cpu.joypad1_state |= 0x04; break;  // Select
+		case 'F':           cpu.joypad1_state |= 0x01; break;  // A
+		case 'D':           cpu.joypad1_state |= 0x02; break;  // B
+		case 'S':           cpu.joypad1_state |= 0x04; break;  // Select
 		case VK_RETURN:     cpu.joypad1_state |= 0x08; break;  // Start
 		case VK_UP:         cpu.joypad1_state |= 0x10; break;  // Up
 		case VK_DOWN:       cpu.joypad1_state |= 0x20; break;  // Down
@@ -89,9 +89,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 		switch (wParam)
 		{
-		case 'Z':           cpu.joypad1_state &= ~0x01; break;
-		case 'X':           cpu.joypad1_state &= ~0x02; break;
-		case VK_SHIFT:      cpu.joypad1_state &= ~0x04; break;
+		case 'F':           cpu.joypad1_state &= ~0x01; break;
+		case 'D':           cpu.joypad1_state &= ~0x02; break;
+		case 'S':           cpu.joypad1_state &= ~0x04; break;
 		case VK_RETURN:     cpu.joypad1_state &= ~0x08; break;
 		case VK_UP:         cpu.joypad1_state &= ~0x10; break;
 		case VK_DOWN:       cpu.joypad1_state &= ~0x20; break;
@@ -235,9 +235,14 @@ int main(int argc, char* argv[])
 	prepareTimer();
 	initMainWindow();
 
-	// Load test/nestest.nes file
+	// Load NES ROM file
+	if (argc < 2)
+	{
+		printf("Usage: nes1 <rom.nes>\n");
+		return 0;
+	}
 	FILE *fp = NULL;
-	fopen_s(&fp, "../test/nestest.nes", "rb");
+	fopen_s(&fp, argv[1], "rb");
 	if (fp == NULL)
 	{
 		printf("error in opening file.\n");
