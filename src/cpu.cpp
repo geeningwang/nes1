@@ -128,6 +128,9 @@ cpu_6502::cpu_6502()
 	memset(mem, 0, 65536);
 	cycle = 0;
 	ppu = nullptr;
+	joypad1_state = 0;
+	joypad1_strobe = false;
+	joypad1_shift = 0;
 }
 
 cpu_6502::~cpu_6502()
@@ -169,6 +172,18 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 			return ppu->cpu_read(addr);
 		return 0;
 	}
+	// Joypad 1
+	if (addr == 0x4016)
+	{
+		if (joypad1_strobe)
+			return joypad1_state & 1;  // A button continuously during strobe
+		unsigned char bit = joypad1_shift & 1;
+		joypad1_shift >>= 1;
+		return bit;
+	}
+	// Joypad 2 (not connected)
+	if (addr == 0x4017)
+		return 0;
 	return mem[addr];
 }
 
@@ -192,6 +207,15 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 	{
 		if (ppu)
 			ppu->oam_dma(mem + ((val & 0x07) << 8));  // DMA from mirrored RAM
+		return;
+	}
+	// Joypad strobe
+	if (addr == 0x4016)
+	{
+		bool new_strobe = (val & 1) != 0;
+		if (joypad1_strobe && !new_strobe)
+			joypad1_shift = joypad1_state;  // latch buttons on strobe 1→0
+		joypad1_strobe = new_strobe;
 		return;
 	}
 	mem[addr] = val;
@@ -495,6 +519,10 @@ bool cpu_6502::step(bool log)
 	unsigned char op8 = 0;
 	unsigned short op16 = 0;
 
+	// Pure store instructions must not read from the destination address —
+	// reading PPU registers ($2007 etc.) has side effects (e.g. increments v).
+	bool store_only = (instruction == STA || instruction == STX || instruction == STY || instruction == SSAX);
+
 	switch (addressing_mode)
 	{
 	case ADDR_NONE:
@@ -523,27 +551,27 @@ bool cpu_6502::step(bool log)
 		break;
 	case ADDR_ABSOLUTE:
 		op16 = OPERAND16;
-		temp = mem_read(op16);
+		if (!store_only) temp = mem_read(op16);
 		break;
 	case ADDR_ABSOLUTE_X:
 		op16 = OPERAND16;
-		temp = mem_read(ADDRESS_ADD_X(op16));
+		if (!store_only) temp = mem_read(ADDRESS_ADD_X(op16));
 		if (PAGE_CROSSED(op16, ADDRESS_ADD_X(op16)))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
 	case ADDR_ABSOLUTE_Y:
 		op16 = OPERAND16;
-		temp = mem_read(ADDRESS_ADD_Y(op16));
+		if (!store_only) temp = mem_read(ADDRESS_ADD_Y(op16));
 		if (PAGE_CROSSED(op16, ADDRESS_ADD_Y(op16)))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
 	case ADDR_INDIRECT_X:
 		op8 = OPERAND8;
-		temp = mem_read(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)));
+		if (!store_only) temp = mem_read(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)));
 		break;
 	case ADDR_INDIRECT_Y:
 		op8 = OPERAND8;
-		temp = mem_read(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)));
+		if (!store_only) temp = mem_read(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)));
 		if (PAGE_CROSSED(ADDRESS_ZERO_PAGE_WRAP(op8), ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8))))
 			instruction_cycles += page_crossed_extra_cycles;
 		break;
