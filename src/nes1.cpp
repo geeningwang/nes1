@@ -8,10 +8,6 @@
 #include <xaudio2.h>
 #include <vector>
 #pragma comment(lib, "xaudio2.lib")
-#include "apu.h"
-#include <xaudio2.h>
-#include <vector>
-#pragma comment(lib, "xaudio2.lib")
 
 unsigned char prg_rom[16384];
 unsigned char chr_rom[8192];
@@ -369,13 +365,8 @@ int main(int argc, char* argv[])
 	cpu.reset();
 
 	ppu.load_chr_rom(chr_rom, 8192);
-        ppu.set_mirroring((header[6] & 0x01) != 0);
-        cpu.set_ppu(&ppu);
-	cpu.set_apu(&apu);
-
-	// Initialize audio
-	if (!g_audio.init())
-		printf("Warning: XAudio2 init failed, no sound.\n");
+	ppu.set_mirroring((header[6] & 0x01) != 0);
+	cpu.set_ppu(&ppu);
 	cpu.set_apu(&apu);
 
 	// Initialize audio
