@@ -142,17 +142,21 @@ cpu_6502::~cpu_6502()
 
 void cpu_6502::load_prg_rom(unsigned char *prom, int rom_size)
 {
-	// NROM (mapper 0) with just 1 16K bank is supported now. prg_rom starts at both 0x8000 and 0xC000.
-	//
-	if (rom_size != 16384)
+	// NROM mapper 0: 16KB (NROM-128) mirrors to both $8000 and $C000;
+	//                32KB (NROM-256) fills $8000-$FFFF straight.
+	if (rom_size == 16384)
+	{
+		memcpy(mem + 0x8000, prom, 16384);
+		memcpy(mem + 0xc000, prom, 16384);
+	}
+	else if (rom_size == 32768)
+	{
+		memcpy(mem + 0x8000, prom, 32768);
+	}
+	else
 	{
 		printf("error in rom_size.\n");
-		return;
 	}
-
-	// copy the rom
-	memcpy(mem + 0x8000, prom, rom_size);
-	memcpy(mem + 0xc000, prom, rom_size);
 
 	return;
 }
@@ -165,6 +169,17 @@ void cpu_6502::set_ppu(ppu_2c02* p)
 void cpu_6502::set_apu(apu_2a03* a)
 {
 	apu = a;
+}
+
+void cpu_6502::set_mem_byte(unsigned short addr, unsigned char val)
+{
+	// Write directly into the 2KB CPU RAM (ZP $00-$FF, RAM $00-$7FF)
+	mem[addr & 0x07FF] = val;
+}
+
+unsigned char cpu_6502::get_mem_byte(unsigned short addr) const
+{
+	return mem[addr & 0x07FF];
 }
 
 unsigned char cpu_6502::mem_read(unsigned short addr)

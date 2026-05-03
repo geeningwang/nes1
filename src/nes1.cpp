@@ -9,7 +9,7 @@
 #include <vector>
 #pragma comment(lib, "xaudio2.lib")
 
-unsigned char prg_rom[16384];
+unsigned char prg_rom[32768];   // up to NROM-256 (2x16KB)
 unsigned char chr_rom[8192];
 
 #define FRAME_FREQUENCY 60
@@ -292,6 +292,100 @@ bool frameIntervalElapsed()
 	return false;
 }
 
+// ─── Automated test helpers ──────────────────────────────────────────────────
+
+// Run one full emulated frame (visible lines + vblank/NMI period).
+static void run_one_frame()
+{
+	unsigned int frame_start = cpu.cycle;
+
+	// Visible scanlines (~27384 CPU cycles on NTSC NES)
+	while ((cpu.cycle - frame_start) < 27384u)
+		cpu.step(false);
+
+	// Raise vblank; fire NMI if enabled by PPUCTRL bit 7
+	ppu.set_vblank(true);
+	if (ppu.nmi_enabled())
+		cpu.nmi();
+
+	// VBlank period (remaining cycles up to ~29829)
+	while ((cpu.cycle - frame_start) < 29829u)
+		cpu.step(false);
+
+	ppu.set_vblank(false);
+}
+
+// ZP addresses for color_test.s variables (from nrom.cfg + source order)
+#define ZP_PPU_EMPHASIS  0x0000u   // ppu_emphasis
+#define ZP_COLOR         0x0001u   // color
+#define ZP_GAMEPAD       0x0003u   // gamepad
+#define ZP_GAMEPAD_LAST  0x0004u   // gamepad_last
+
+// The 16 PPU-mask (ppu_emphasis) values exercised by the test:
+//   Bits 7/6/5 = blue/green/red colour emphasis (8 combos)
+//   Bit 0      = greyscale mode (2 states)
+//   Bits 4/3/2/1 fixed at 1 (sprites on, BG on, show leftmost columns)
+//
+//   No-grey:   $1E $3E $5E $7E $9E $BE $DE $FE
+//   Grey mode: $1F $3F $5F $7F $9F $BF $DF $FF
+static const unsigned char k_emph_values[16] = {
+	0x1E, 0x3E, 0x5E, 0x7E, 0x9E, 0xBE, 0xDE, 0xFE,
+	0x1F, 0x3F, 0x5F, 0x7F, 0x9F, 0xBF, 0xDF, 0xFF,
+};
+
+static void run_autotest(const char* outdir)
+{
+	// Create output directory (silently succeeds if it already exists)
+	CreateDirectoryA(outdir, NULL);
+
+	// Off-screen render buffer (BGRA, 256×240)
+	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+
+	// Let the ROM finish its reset/initialisation sequence before we start
+	// overriding ZP values (~10 frames covers the two vblank waits in reset).
+	printf("Initialising ROM...\n");
+	for (int i = 0; i < 10; i++)
+		run_one_frame();
+
+	int total = 0;
+	char txtpath[512];
+
+	for (int ei = 0; ei < 16; ei++)
+	{
+		unsigned char emph = k_emph_values[ei];
+
+		for (int c = 0x00; c <= 0x3F; c++)
+		{
+			// Directly set the ROM's zero-page state
+			cpu.set_mem_byte(ZP_PPU_EMPHASIS, emph);
+			cpu.set_mem_byte(ZP_COLOR,        (unsigned char)c);
+			cpu.set_mem_byte(ZP_GAMEPAD,      0x00);   // no buttons held
+			cpu.set_mem_byte(ZP_GAMEPAD_LAST, 0x00);   // allow NMI to process
+
+			// Two frames: frame 1 = NMI picks up new values;
+			//             frame 2 = rendered with those values stable
+			run_one_frame();
+			run_one_frame();
+
+			// Render into the off-screen buffer and export BMP + text dump
+			ppu.render(screen_buf);
+
+			sprintf_s(txtpath, sizeof(txtpath),
+			          "%s\\nes1_color%02X_emph%02X.txt",
+			          outdir, (unsigned)c, (unsigned)emph);
+			ppu.export_frame(screen_buf, txtpath);
+
+			total++;
+			if ((total % 64) == 0)
+				printf("Progress: %d / 1024\n", total);
+		}
+	}
+
+	delete[] screen_buf;
+	printf("Autotest complete: %d screenshots saved to %s\\\n", total, outdir);
+}
+
 int main(int argc, char* argv[])
 {
 	prepareTimer();
@@ -329,10 +423,10 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
-	// Assert the prg_rom and chr_rom sizes
-	if (header[4] != 1 || header[5] != 1)
+	// Assert the prg_rom and chr_rom sizes (1 or 2 PRG banks, exactly 1 CHR bank)
+	if (header[4] < 1 || header[4] > 2 || header[5] != 1)
 	{
-		printf("Only 1 prg_rom and 1 chr_rom NES file is supported now.\n");
+		printf("Only 1-2 PRG banks and 1 CHR bank (mapper 0) are supported now.\n");
 		fclose(fp);
 		return 0;
 	}
@@ -346,9 +440,10 @@ int main(int argc, char* argv[])
 	}
 
 	// Check file size
+	int prg_size = header[4] * 16384;
 	fseek(fp, 0, SEEK_END);
 	long filesize = ftell(fp);
-	if (filesize != sizeof(header) + 16384 + 8192)
+	if (filesize != (long)(sizeof(header) + prg_size + 8192))
 	{
 		printf("File size incorrect.\n");
 		fclose(fp);
@@ -357,17 +452,27 @@ int main(int argc, char* argv[])
 	fseek(fp, sizeof(header), SEEK_SET);
 
 	// Initialize the 6502 CPU, load the PRG_ROM into CPU.
-	fread(prg_rom, 1, 16384, fp);
+	fread(prg_rom, 1, prg_size, fp);
 	fread(chr_rom, 1, 8192, fp);
 	fclose(fp);
 
-	cpu.load_prg_rom(prg_rom, 16384);
+	cpu.load_prg_rom(prg_rom, prg_size);
 	cpu.reset();
 
 	ppu.load_chr_rom(chr_rom, 8192);
 	ppu.set_mirroring((header[6] & 0x01) != 0);
 	cpu.set_ppu(&ppu);
 	cpu.set_apu(&apu);
+
+	// ── Automated headless test mode ─────────────────────────────────────────
+	// Usage: nes1.exe <rom.nes> --autotest <output_dir>
+	// Runs all 1024 (64 colours × 16 emphasis/greyscale) combinations and saves
+	// a BMP + text dump for each frame, then exits without opening a window.
+	if (argc >= 4 && strcmp(argv[2], "--autotest") == 0)
+	{
+		run_autotest(argv[3]);
+		return 0;
+	}
 
 	// Initialize audio
 	if (!g_audio.init())

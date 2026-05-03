@@ -18,8 +18,12 @@ public:
 	bool step(bool log);
 	void nmi();
 
+	// Direct RAM access for automated testing (bypasses bus mapping)
+	void           set_mem_byte(unsigned short addr, unsigned char val);
+	unsigned char  get_mem_byte(unsigned short addr) const;
+
 public:
-	unsigned int cycle;
+	unsigned int  cycle;
 
 	// Joypad 1 button state (set from outside each frame)
 	// bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
