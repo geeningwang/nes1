@@ -299,17 +299,35 @@ static void run_one_frame()
 {
 	unsigned int frame_start = cpu.cycle;
 
-	// Visible scanlines (~27384 CPU cycles on NTSC NES)
-	while ((cpu.cycle - frame_start) < 27384u)
-		cpu.step(false);
+	// Pre-visible: clear spr0-hit flag, seed per-scanline scroll snapshots
+	// with the NMI-written scroll (the game's NMI resets scroll to 0 for the HUD).
+	ppu.begin_frame();
+
+	// Visible scanlines: ~114 CPU cycles each (341 PPU dots / 3).
+	// check_sprite0_hit fires the spr0-hit flag when the scanline enters
+	// sprite-0's vertical range; the game's main loop then writes the
+	// game-area scroll ($2005=E0,$2005=00) during that scanline's CPU budget.
+	// end_scanline() snapshots the current scroll into scanline_scroll[sl]
+	// so render() can apply the correct scroll per tile row.
+	for (int sl = 0; sl < 240; ++sl)
+	{
+		ppu.check_sprite0_hit(sl);
+
+		unsigned int sl_start = cpu.cycle;
+		while ((cpu.cycle - sl_start) < 114u)
+			cpu.step(false);
+
+		ppu.end_scanline(sl);
+	}
+	// 240 × 114 = 27360 cycles visible (vs old 27384, negligible difference)
 
 	// Raise vblank; fire NMI if enabled by PPUCTRL bit 7
 	ppu.set_vblank(true);
 	if (ppu.nmi_enabled())
 		cpu.nmi();
 
-	// VBlank period (remaining cycles up to ~29829)
-	while ((cpu.cycle - frame_start) < 29829u)
+	// VBlank period (remaining cycles up to ~29780, matching NTSC NES: 89342 PPU / 3)
+	while ((cpu.cycle - frame_start) < 29780u)
 		cpu.step(false);
 
 	ppu.set_vblank(false);

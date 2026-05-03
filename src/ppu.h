@@ -4,6 +4,13 @@
 #define SCREEN_HEIGHT 240
 #define DISPLAY_SCALE 2
 
+struct ScanlineScroll {
+	unsigned char scroll_x;
+	unsigned char fine_x;
+	unsigned char scroll_y;
+	unsigned char scroll_nt;
+};
+
 class ppu_2c02
 {
 public:
@@ -27,6 +34,14 @@ public:
 
 	// Set nametable mirroring (false=horizontal, true=vertical)
 	void set_mirroring(bool vertical);
+
+	// Per-scanline rendering support:
+	//   begin_frame()         – call before visible scanlines; clears spr0-hit, seeds scrolls
+	//   check_sprite0_hit(sl) – call before each scanline's CPU cycles
+	//   end_scanline(sl)      – call after each scanline's CPU cycles; snapshots scroll
+	void begin_frame();
+	void check_sprite0_hit(int scanline);
+	void end_scanline(int scanline);
 
 	// Dump nametable, palette, and ASCII screen art to a text file
 	void export_frame(unsigned char* pScreenBits, const char* filename);
@@ -79,4 +94,10 @@ private:
 	// frame's NMI (OAM DMA).  By snapshotting before NMI fires, render() sees the
 	// same OAM state that FCEUX uses for the current frame's scanlines.
 	unsigned char render_oam[256];
+
+	// Per-scanline scroll snapshot: entry [sl] is captured by end_scanline(sl)
+	// after the CPU has run that scanline's ~114 cycles.  render() uses
+	// scanline_scroll[row*8] for each tile row so mid-frame scroll changes
+	// (e.g. sprite-0-hit scroll split) are applied correctly.
+	ScanlineScroll scanline_scroll[240];
 };

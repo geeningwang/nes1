@@ -179,6 +179,7 @@ ppu_2c02::ppu_2c02()
 	render_scroll_y  = 0;
 	render_scroll_nt = 0;
 	memset(render_oam, 0xFF, 256);  // 0xFF = hide all sprites (y=256, off-screen)
+	memset(scanline_scroll, 0, sizeof(scanline_scroll));
 }
 
 ppu_2c02::~ppu_2c02()
@@ -331,18 +332,20 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 	// Draw background (PPUMASK bit 3)
 	if (reg_mask & 0x08)
 	{
-		// Extract scroll from the end-of-visible-scanlines snapshot.
-		// render_scroll_* is captured at set_vblank(true), after the game's
-		// main loop has written $2005 but before the NMI overwrites it.
-		int fine_x_r = (int)render_fine_x;
-		int coarse_x = (int)(render_scroll_x >> 3);   // tile column to start from (0-31)
-		int fine_y_r = (int)(render_scroll_y & 0x07); // fine Y within first tile row (0-7)
-		int coarse_y = (int)(render_scroll_y >> 3);   // tile row to start from (0-29)
-		int nt_sel   = (int)render_scroll_nt;         // base nametable 0-3
-
-		// Render 33 columns x 31 rows to cover the fine-scroll overhang on all edges.
+		// Render 33 columns x 31 rows using per-scanline scroll snapshots.
+		// For each tile row, read the scroll captured at its first pixel row
+		// so that mid-frame scroll splits (e.g. sprite-0-hit) are applied correctly.
 		for (int row = 0; row <= 30; ++row)
 		{
+			// Map tile row -> first scanline; clamp to [0,239]
+			int sl = row * 8;
+			if (sl >= 240) sl = 239;
+			int fine_x_r = (int)scanline_scroll[sl].fine_x;
+			int coarse_x = (int)(scanline_scroll[sl].scroll_x >> 3);
+			int fine_y_r = (int)(scanline_scroll[sl].scroll_y & 0x07);
+			int coarse_y = (int)(scanline_scroll[sl].scroll_y >> 3);
+			int nt_sel   = (int)scanline_scroll[sl].scroll_nt;
+
 			for (int col = 0; col <= 32; ++col)
 			{
 				// Absolute tile coords in the 64-wide x 60-tall virtual space
@@ -546,6 +549,40 @@ void ppu_2c02::oam_dma(unsigned char* page_data)
 {
 	for (int i = 0; i < 256; i++)
 		oam[(reg_oam_addr + i) & 0xFF] = page_data[i];
+}
+
+void ppu_2c02::begin_frame()
+{
+	// Clear sprite-0 hit (reset at pre-render scanline on real HW)
+	reg_status &= ~0x40;
+	// Seed all scanline scroll entries with the NMI-written scroll values.
+	// After sprite-0-hit the game writes new scroll values; end_scanline()
+	// will overwrite the affected entries with the updated values.
+	for (int sl = 0; sl < 240; ++sl)
+	{
+		scanline_scroll[sl].scroll_x  = scroll_x_reg;
+		scanline_scroll[sl].fine_x    = fine_x;
+		scanline_scroll[sl].scroll_y  = scroll_y_reg;
+		scanline_scroll[sl].scroll_nt = scroll_nt;
+	}
+}
+
+void ppu_2c02::check_sprite0_hit(int sl)
+{
+	if (reg_status & 0x40) return;  // already set this frame
+	// Use live OAM (post-NMI DMA) for sprite-0 position, matching real HW
+	int sy = (int)oam[0] + 1;  // OAM byte 0 = Y-1; sy = first scanline sprite appears on
+	if (sl >= sy && sl < sy + 8)
+		reg_status |= 0x40;
+}
+
+void ppu_2c02::end_scanline(int sl)
+{
+	if (sl < 0 || sl >= 240) return;
+	scanline_scroll[sl].scroll_x  = scroll_x_reg;
+	scanline_scroll[sl].fine_x    = fine_x;
+	scanline_scroll[sl].scroll_y  = scroll_y_reg;
+	scanline_scroll[sl].scroll_nt = scroll_nt;
 }
 
 void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
