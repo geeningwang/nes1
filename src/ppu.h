@@ -37,7 +37,7 @@ private:
 	void           ppu_mem_write(unsigned short addr, unsigned char val);
 
 private:
-	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false);
+	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false, unsigned char* bg_opaque = nullptr);
 
 private:
 	unsigned char* mem;
@@ -56,4 +56,27 @@ private:
 	unsigned char  w;        // write latch (0 or 1)
 	unsigned char  data_buf; // $2007 read buffer
 	bool           mirror_vertical; // false=horizontal, true=vertical
+
+	// Saved scroll for lazy rendering.
+	// t is clobbered by $2006 VRAM-address writes that typically follow
+	// the $2005 scroll writes in a game NMI handler.  We save the raw
+	// $2005 values and the $2000 NT bits here so render() can use them
+	// even after t has been overwritten.
+	unsigned char scroll_x_reg; // raw value from last $2005 first-write  (X)
+	unsigned char scroll_y_reg; // raw value from last $2005 second-write (Y)
+	unsigned char scroll_nt;    // NT select bits 1:0 from last $2000 write
+
+	// Scroll snapshot captured at set_vblank(true) — end of visible scanlines,
+	// before NMI runs and overwrites the scroll registers.
+	// render() uses these so it sees the scroll that was active during rendering.
+	unsigned char render_scroll_x;
+	unsigned char render_fine_x;
+	unsigned char render_scroll_y;
+	unsigned char render_scroll_nt;
+
+	// OAM snapshot captured at set_vblank(true) — same timing as scroll snapshot.
+	// On a real NES, visible scanlines use the OAM that was set by the *previous*
+	// frame's NMI (OAM DMA).  By snapshotting before NMI fires, render() sees the
+	// same OAM state that FCEUX uses for the current frame's scanlines.
+	unsigned char render_oam[256];
 };

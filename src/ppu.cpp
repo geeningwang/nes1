@@ -171,6 +171,14 @@ ppu_2c02::ppu_2c02()
 	w       = 0;
 	data_buf = 0;
 	mirror_vertical = false;
+	scroll_x_reg = 0;
+	scroll_y_reg = 0;
+	scroll_nt    = 0;
+	render_scroll_x  = 0;
+	render_fine_x    = 0;
+	render_scroll_y  = 0;
+	render_scroll_nt = 0;
+	memset(render_oam, 0xFF, 256);  // 0xFF = hide all sprites (y=256, off-screen)
 }
 
 ppu_2c02::~ppu_2c02()
@@ -257,13 +265,14 @@ void ppu_2c02::load_chr_rom(unsigned char* prom, int rom_size)
 	return;
 }
 
-void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char *pScreenBits, bool is_sprite)
+void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char *pScreenBits, bool is_sprite, unsigned char* bg_opaque)
 {
 	if (x == 0xff && y == 0xff)
 	{
 		return;
 	}
 
+	unsigned emph_idx = (reg_mask >> 5) & 7;
 	for (int j = 0; j < 8; ++j)
 	{
 		for (int i = 0; i < 8; ++i)
@@ -272,19 +281,25 @@ void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bi
 			unsigned char color_bit1 = ((*(chr + 8 + j) >> (7 - i)) & 1) << 1;
 
 			unsigned char color = color_bit23 | color_bit1 | color_bit0;  // 4 bit color in palette
+			bool opaque = (color & 0x03) != 0;
 			// When both CHR bit-planes are 0 the pixel is transparent
-			if ((color & 0x03) == 0) {
+			if (!opaque) {
 				if (is_sprite) continue;  // sprite transparent pixel: leave background as-is
 				color = 0;                // background: use universal BG color ($3F00)
 			}
 			color = ppu_mem_read(0x3f00 + color);  // 6-bit NES palette index
 			if (reg_mask & 0x01) color &= 0x30;    // greyscale: force to grey ramp
-			unsigned emph_idx = (reg_mask >> 5) & 7;
-			unsigned index = (y + j) * 256 + (x + i);
+			int px = x + i;
+			int py = y + j;
+			if (px < 0 || px >= SCREEN_WIDTH || py < 0 || py >= SCREEN_HEIGHT) continue;
+			unsigned index = (unsigned)(py * SCREEN_WIDTH + px);
 			pScreenBits[index * 4 + 0] = nes_color_emph[emph_idx][color * 3 + 2];
 			pScreenBits[index * 4 + 1] = nes_color_emph[emph_idx][color * 3 + 1];
 			pScreenBits[index * 4 + 2] = nes_color_emph[emph_idx][color * 3 + 0];
 			pScreenBits[index * 4 + 3] = 0;
+			// Mark opaque BG pixels so behind-BG sprites can check priority
+			if (bg_opaque && opaque)
+				bg_opaque[index] = 1;
 		}
 	}
 
@@ -308,47 +323,107 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 		pScreenBits[p * 4 + 3] = 0;
 	}
 
+	// bg_opaque[px + py*W] = 1 where a non-transparent BG tile pixel was drawn.
+	// Used to implement sprite behind-BG priority (sprite only shows on transparent BG).
+	unsigned char bg_opaque[SCREEN_WIDTH * SCREEN_HEIGHT];
+	memset(bg_opaque, 0, sizeof(bg_opaque));
+
 	// Draw background (PPUMASK bit 3)
 	if (reg_mask & 0x08)
 	{
-		for (int y = 0; y < 30; ++y)
+		// Extract scroll from the end-of-visible-scanlines snapshot.
+		// render_scroll_* is captured at set_vblank(true), after the game's
+		// main loop has written $2005 but before the NMI overwrites it.
+		int fine_x_r = (int)render_fine_x;
+		int coarse_x = (int)(render_scroll_x >> 3);   // tile column to start from (0-31)
+		int fine_y_r = (int)(render_scroll_y & 0x07); // fine Y within first tile row (0-7)
+		int coarse_y = (int)(render_scroll_y >> 3);   // tile row to start from (0-29)
+		int nt_sel   = (int)render_scroll_nt;         // base nametable 0-3
+
+		// Render 33 columns x 31 rows to cover the fine-scroll overhang on all edges.
+		for (int row = 0; row <= 30; ++row)
 		{
-			for (int x = 0; x < 32; ++x)
+			for (int col = 0; col <= 32; ++col)
 			{
-				unsigned char name = ppu_mem_read(0x2000 + y * 32 + x);
+				// Absolute tile coords in the 64-wide x 60-tall virtual space
+				int abs_col = coarse_x + col;
+				int abs_row = coarse_y + row;
 
-				// Attribute table: each byte covers 4x4 tiles
-				unsigned char att = ppu_mem_read(0x23c0 + (y / 4) * 8 + (x / 4));
-				unsigned int square = (y & 0x02) + ((x >> 1) & 0x01);
-				unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
+				// Determine nametable and local tile offset, wrapping every 32 cols / 30 rows
+				int nt_h    = ((nt_sel & 0x01) + (abs_col / 32)) & 0x01;
+				int nt_v    = (((nt_sel >> 1) & 0x01) + (abs_row / 30)) & 0x01;
+				int cur_nt  = nt_v * 2 + nt_h;
 
-				// BG pattern table: PPUCTRL bit 4 selects $0000 or $1000
+				int local_col = abs_col % 32;
+				int local_row = abs_row % 30;
+
+				unsigned short nt_base  = 0x2000 + cur_nt * 0x400;
+				unsigned char  name     = ppu_mem_read(nt_base + local_row * 32 + local_col);
+
+				// Attribute table: each byte covers a 4x4-tile block
+				unsigned short att_base   = nt_base + 0x3C0;
+				unsigned char  att        = ppu_mem_read(att_base + (local_row / 4) * 8 + (local_col / 4));
+				int            square     = (local_row & 0x02) + ((local_col >> 1) & 0x01);
+				unsigned char  color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
+
 				unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
-				unsigned char* chr = mem + bg_base + name * 16;
+				unsigned char* chr     = mem + bg_base + name * 16;
 
-				draw_chr(chr, x * 8, y * 8, color_bit23, pScreenBits);
+				int screen_x = col * 8 - fine_x_r;
+				int screen_y = row * 8 - fine_y_r;
+
+				draw_chr(chr, screen_x, screen_y, color_bit23, pScreenBits, false, bg_opaque);
 			}
 		}
 	}
 
-	// Draw sprites (PPUMASK bit 4), back-to-front so sprite 0 is on top
+	// Draw sprites (PPUMASK bit 4), back-to-front so sprite 0 ends up on top.
+	// Implements H-flip (attribute bit 6), V-flip (attribute bit 7), and
+	// behind-BG priority (attribute bit 5: sprite only shows on transparent BG pixels).
 	if (reg_mask & 0x10)
 	{
-		for (int i = 63; i >= 0; --i)
+		unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
+		for (int spr = 63; spr >= 0; --spr)
 		{
-			unsigned char sx = oam[i * 4 + 3];
-			unsigned char sy = oam[i * 4 + 0] + 1;
-			unsigned char name_index = oam[i * 4 + 1];
-			unsigned char attribute = oam[i * 4 + 2];
-			unsigned char color_bit23 = ((attribute & 0x03) << 2) | 0x10;  // sprite palette ($3F10)
+		int            sx         = (int)render_oam[spr * 4 + 3];
+		int            sy         = (int)render_oam[spr * 4 + 0] + 1;  // int prevents 0xFF+1 wrap
+		unsigned char  name_index = render_oam[spr * 4 + 1];
+		unsigned char  attribute  = render_oam[spr * 4 + 2];
+			unsigned char  color_bit23 = ((attribute & 0x03) << 2) | 0x10;  // sprite palette ($3F10)
+			bool           h_flip     = (attribute & 0x40) != 0;
+			bool           v_flip     = (attribute & 0x80) != 0;
+			bool           behind_bg  = (attribute & 0x20) != 0;
 
-			if (sy >= SCREEN_HEIGHT) continue;  // off-screen
+			if (sy >= SCREEN_HEIGHT) continue;  // off-screen (int arithmetic catches 0xFF+1=256)
 
-			// Sprite pattern table: PPUCTRL bit 3 selects $0000 or $1000
-			unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
 			unsigned char* chr = mem + spr_base + name_index * 16;
 
-			draw_chr(chr, sx, sy, color_bit23, pScreenBits, true);
+			for (int j = 0; j < 8; ++j)
+			{
+				int j_chr = v_flip ? (7 - j) : j;
+				for (int i = 0; i < 8; ++i)
+				{
+					int i_chr = h_flip ? (7 - i) : i;
+					unsigned char color_bit0 = (chr[j_chr]     >> (7 - i_chr)) & 1;
+					unsigned char color_bit1 = ((chr[8 + j_chr] >> (7 - i_chr)) & 1) << 1;
+					unsigned char color = color_bit23 | color_bit1 | color_bit0;
+					if ((color & 0x03) == 0) continue;  // transparent sprite pixel
+
+					int px = sx + i;
+					int py = sy + j;
+					if (px < 0 || px >= SCREEN_WIDTH || py < 0 || py >= SCREEN_HEIGHT) continue;
+
+					unsigned index = (unsigned)(py * SCREEN_WIDTH + px);
+					if (behind_bg && bg_opaque[index]) continue;  // hidden behind opaque BG
+
+					unsigned char col = ppu_mem_read(0x3f00 + color);
+					if (reg_mask & 0x01) col &= 0x30;
+					pScreenBits[index * 4 + 0] = nes_color_emph[emph_idx][col * 3 + 2];
+					pScreenBits[index * 4 + 1] = nes_color_emph[emph_idx][col * 3 + 1];
+					pScreenBits[index * 4 + 2] = nes_color_emph[emph_idx][col * 3 + 0];
+					pScreenBits[index * 4 + 3] = 0;
+				}
+			}
 		}
 	}
 
@@ -399,6 +474,7 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 	case 0x2000:  // PPUCTRL
 		reg_ctrl = val;
 		t = (t & 0xF3FF) | ((val & 0x03) << 10);
+		scroll_nt = val & 0x03;  // save NT bits for render
 		break;
 	case 0x2001:  // PPUMASK
 		reg_mask = val;
@@ -414,12 +490,14 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		{
 			t = (t & 0xFFE0) | (val >> 3);  // coarse X into t
 			fine_x = val & 0x07;            // fine X
+			scroll_x_reg = val;             // save raw X for render
 			w = 1;
 		}
 		else
 		{
 			t = (t & 0x8FFF) | ((val & 0x07) << 12);  // fine Y into t
 			t = (t & 0xFC1F) | ((val >> 3) << 5);      // coarse Y into t
+			scroll_y_reg = val;                        // save raw Y for render
 			w = 0;
 		}
 		break;
@@ -445,10 +523,23 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 
 void ppu_2c02::set_vblank(bool vb)
 {
-	if (vb)
+	if (vb) {
+		// Snapshot the scroll state at the end of visible scanlines,
+		// before NMI fires and overwrites scroll_x_reg / scroll_y_reg.
+		// The game's main loop writes $2005 scroll during visible scanlines;
+		// its NMI handler resets $2005 for sprite purposes.
+		render_scroll_x  = scroll_x_reg;
+		render_fine_x    = fine_x;
+		render_scroll_y  = scroll_y_reg;
+		render_scroll_nt = scroll_nt;
+		// Snapshot OAM: the NMI OAM DMA will overwrite oam[] with next-frame
+		// positions.  We need the pre-NMI OAM (previous frame's positions)
+		// to match what a scanline-accurate renderer sees during visible lines.
+		memcpy(render_oam, oam, 256);
 		reg_status |= 0x80;
-	else
+	} else {
 		reg_status &= 0x7F;
+	}
 }
 
 void ppu_2c02::oam_dma(unsigned char* page_data)
@@ -475,8 +566,12 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
 		reg_mask, (reg_mask >> 3) & 1, (reg_mask >> 4) & 1);
 	fprintf(f, "PPUSTATUS($2002): %02X  (VBL:%d)\n",
 		reg_status, (reg_status >> 7) & 1);
-	fprintf(f, "v=%04X  t=%04X  fine_x=%d  mirroring=%s\n\n",
+	fprintf(f, "v=%04X  t=%04X  fine_x=%d  mirroring=%s\n",
 		v, t, fine_x, mirror_vertical ? "vertical" : "horizontal");
+	fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n\n",
+		render_scroll_x, render_scroll_x >> 3, render_fine_x,
+		render_scroll_y, render_scroll_y >> 3, render_scroll_y & 7,
+		render_scroll_nt);
 
 	// --- Nametable dump ($2000-$23BF) ---
 	fprintf(f, "=== Nametable ($2000-$23BF, 32x30 tile IDs) ===\n");

@@ -386,6 +386,36 @@ static void run_autotest(const char* outdir)
 	printf("Autotest complete: %d screenshots saved to %s\\\n", total, outdir);
 }
 
+// Run nframes from reset with no input, saving a BMP every 'interval' frames.
+// Output files: <outdir>\nes1_frame_NNNN.bmp
+static void run_frametest(const char* outdir, int nframes, int interval)
+{
+	CreateDirectoryA(outdir, NULL);
+	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+
+	printf("Running %d frames, saving every %d...\n", nframes, interval);
+
+	int saved = 0;
+	for (int f = 1; f <= nframes; f++)
+	{
+		run_one_frame();
+		if (f % interval == 0)
+		{
+			ppu.render(screen_buf);
+			char path[512];
+			sprintf_s(path, sizeof(path),
+			          "%s\\nes1_frame_%04d.txt", outdir, f);
+			ppu.export_frame(screen_buf, path);
+			saved++;
+			printf("  Frame %4d / %d\n", f, nframes);
+		}
+	}
+
+	delete[] screen_buf;
+	printf("Frametest done: %d screenshots saved to %s\\\n", saved, outdir);
+}
+
 int main(int argc, char* argv[])
 {
 	prepareTimer();
@@ -394,7 +424,7 @@ int main(int argc, char* argv[])
 	// Load NES ROM file
 	if (argc < 2)
 	{
-		printf("Usage: nes1 <rom.nes>\n");
+		printf("Usage: nes1 <rom.nes> [--autotest <outdir>] [--frametest <outdir> [nframes] [interval]]\n");
 		return 0;
 	}
 	FILE *fp = NULL;
@@ -464,13 +494,19 @@ int main(int argc, char* argv[])
 	cpu.set_ppu(&ppu);
 	cpu.set_apu(&apu);
 
-	// ── Automated headless test mode ─────────────────────────────────────────
-	// Usage: nes1.exe <rom.nes> --autotest <output_dir>
-	// Runs all 1024 (64 colours × 16 emphasis/greyscale) combinations and saves
-	// a BMP + text dump for each frame, then exits without opening a window.
+	// ── Automated headless test modes ───────────────────────────────────────
 	if (argc >= 4 && strcmp(argv[2], "--autotest") == 0)
 	{
+		// Runs all 1024 (64 colours × 16 emphasis/greyscale) combinations
 		run_autotest(argv[3]);
+		return 0;
+	}
+	if (argc >= 4 && strcmp(argv[2], "--frametest") == 0)
+	{
+		// Runs nframes from reset, saving a screenshot every interval frames
+		int nframes  = (argc >= 5) ? atoi(argv[4]) : 300;
+		int interval = (argc >= 6) ? atoi(argv[5]) : 30;
+		run_frametest(argv[3], nframes, interval);
 		return 0;
 	}
 
