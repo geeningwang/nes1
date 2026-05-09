@@ -316,7 +316,7 @@ bool frameIntervalElapsed()
 // between calls, like FCEUX's X6502_Run) and a ppu_remainder accumulator.
 // This gives per-frame CPU = exactly 29780 or 29781 (alternating via kook),
 // identical to FCEUX — no cumulative drift.
-static void run_one_frame(bool suppress_vbl = false)
+static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_samples = nullptr)
 {
 	// Persistent state (survives across frames, like FCEUX's global counters)
 	static int ppu_remainder = 0;  // PPU sub-cycle carry (0-2)
@@ -333,7 +333,10 @@ static void run_one_frame(bool suppress_vbl = false)
 		while (cycle_counter > 0) {
 			unsigned int before = cpu.cycle;
 			cpu.step(false);
-			cycle_counter -= (int)(cpu.cycle - before);
+			unsigned int elapsed = cpu.cycle - before;
+			if (audio_samples)
+				apu.tick_n(elapsed, *audio_samples);
+			cycle_counter -= (int)elapsed;
 		}
 	};
 
@@ -679,11 +682,19 @@ int main(int argc, char* argv[])
 	if (!g_audio.init())
 		printf("Warning: XAudio2 init failed, no sound.\n");
 
+	// Point the PPU at the live DIB framebuffer so render_scanline() writes
+	// directly to the pixels we blit to the screen each frame.
+	ppu.framebuf = pScreenBits;
+
+	// Run 2 "dead" (ppudead) frames so the ROM completes its VBlank-wait reset
+	// sequence before we start displaying, matching FCEUX behaviour.
+	run_one_frame(/*suppress_vbl=*/true);
+	run_one_frame(/*suppress_vbl=*/true);
+
 	// Run!
-	bool result = true;
 	MSG msg = { };
 
-	while (result)
+	while (true)
 	{
 		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))
 		{
@@ -696,34 +707,13 @@ int main(int argc, char* argv[])
 
 		if (frameIntervalElapsed())
 		{
-			// NTSC NES: 29829 CPU cycles per frame
-			// ~27384 cycles for visible scanlines, ~2445 for vblank period
-			unsigned int frame_start = cpu.cycle;
 			std::vector<short> audio_samples;
 			audio_samples.reserve(AUDIO_SAMPLES_PER_FRAME + 10);
 
-			// Run visible scanlines
-			while (result && (cpu.cycle - frame_start) < 27384u) {
-				unsigned int cyc_before = cpu.cycle;
-				result = cpu.step(false);
-				apu.tick_n(cpu.cycle - cyc_before, audio_samples);
-			}
+			// Run one full emulated frame (handles VBL, NMI, scroll snapshots,
+			// palette snapshots, and per-scanline rendering into ppu.framebuf).
+			run_one_frame(false, &audio_samples);
 
-			// Raise vblank, trigger NMI if enabled
-			ppu.set_vblank(true);
-			if (ppu.nmi_enabled())
-				cpu.nmi();
-
-			// Run vblank period
-			while (result && (cpu.cycle - frame_start) < 29829u) {
-				unsigned int cyc_before = cpu.cycle;
-				result = cpu.step(false);
-				apu.tick_n(cpu.cycle - cyc_before, audio_samples);
-			}
-
-			// End vblank, render video
-			ppu.set_vblank(false);
-			ppu.render(pScreenBits);
 			InvalidateRect(hMainWindow, NULL, FALSE);
 
 			// Submit audio for this frame
@@ -735,6 +725,7 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	ppu.framebuf = nullptr;
 	g_audio.destroy();
     return 0;
 }
