@@ -7,9 +7,34 @@
 struct ScanlineScroll {
 	unsigned char scroll_x;
 	unsigned char fine_x;
-	unsigned char scroll_y;
+	short         scroll_y;    // abs_y (0..479): per-scanline vertical position
 	unsigned char scroll_nt;
 };
+
+// Per-scanline CPU+PPU state captured at the END of each visible scanline
+// (after that scanline's CPU run, before end_scanline() updates scroll).
+struct ScanlineTraceEntry {
+	// CPU state
+	unsigned short cpu_pc;
+	unsigned char  cpu_a, cpu_x, cpu_y, cpu_s, cpu_p;
+	unsigned int   cpu_cycles;   // total CPU cycle counter
+
+	// PPU Loopy registers (live, not the render snapshots)
+	unsigned short ppu_v;
+	unsigned short ppu_t;
+	unsigned char  ppu_fine_x;
+	unsigned char  ppu_w;
+
+	// Raw scroll registers ($2005 write values and $2000 NT bits)
+	unsigned char  scroll_x_reg;
+	unsigned char  scroll_y_reg;
+	unsigned char  scroll_nt;
+
+	// Live palette entry $3F00 (universal BG color)
+	unsigned char  pal_3f00;
+};
+
+class cpu_6502;
 
 class ppu_2c02
 {
@@ -32,6 +57,12 @@ public:
 	// Set/clear the vblank flag in PPUSTATUS
 	void set_vblank(bool vb);
 
+	// VBL-first helpers (used by run_one_frame in frametest mode to match FCEUX structure):
+	//   raise_vblank()     – set VBL flag only (no snapshot); ROM will exit its spin loop next read
+	//   snapshot_render()  – capture NT/PAL/scroll into render buffers and clear VBL flag
+	void raise_vblank();
+	void snapshot_render();
+
 	// Set nametable mirroring (false=horizontal, true=vertical)
 	void set_mirroring(bool vertical);
 
@@ -39,12 +70,31 @@ public:
 	//   begin_frame()         – call before visible scanlines; clears spr0-hit, seeds scrolls
 	//   check_sprite0_hit(sl) – call before each scanline's CPU cycles
 	//   end_scanline(sl)      – call after each scanline's CPU cycles; snapshots scroll
+	//   snap_nmi_scroll()     – call immediately after cpu.nmi() returns; saves post-NMI scroll
 	void begin_frame();
+	void begin_scanline(int scanline);  // call BEFORE each scanline's run_ppu — snaps palette
+	void render_scanline(int sl, unsigned char* fb); // per-scanline live rendering (reads live mem[])
 	void check_sprite0_hit(int scanline);
 	void end_scanline(int scanline);
+	void snap_nmi_scroll();
+	// Call between run_ppu(256) and run_ppu(69) of the pre-render scanline.
+	// Captures T's vertical bits so begin_frame() uses the pre-dot-280 vertical scroll,
+	// matching the NES hardware T→V vertical copy at pre-render dots 280-304.
+	void snap_pre_render_vscroll();
 
 	// Dump nametable, palette, and ASCII screen art to a text file
-	void export_frame(unsigned char* pScreenBits, const char* filename);
+	void export_frame(unsigned char* pScreenBits, const char* filename, cpu_6502* cpu = nullptr);
+
+	// Per-scanline trace capture (called from nes1.cpp during a traced frame).
+	// call capture_scanline_trace(sl, cpu) after each visible scanline's CPU run.
+	// Then call export_scanline_trace(path) to write the trace file.
+	void capture_scanline_trace(int sl, cpu_6502* cpu);
+	void export_scanline_trace(const char* filename);
+
+	// Active framebuffer for per-scanline live rendering.
+	// When non-null, render_scanline() writes directly here and render() is a no-op.
+	// Set from outside before each frame; null = use batch render().
+	unsigned char* framebuf;
 
 private:
 	unsigned short mirror_nt_addr(unsigned short addr);
@@ -89,15 +139,50 @@ private:
 	unsigned char render_scroll_y;
 	unsigned char render_scroll_nt;
 
-	// OAM snapshot captured at set_vblank(true) — same timing as scroll snapshot.
-	// On a real NES, visible scanlines use the OAM that was set by the *previous*
-	// frame's NMI (OAM DMA).  By snapshotting before NMI fires, render() sees the
-	// same OAM state that FCEUX uses for the current frame's scanlines.
+	// OAM snapshot captured at begin_frame() — start of visible scanlines, before
+	// the game's main loop has had any chance to advance sprite positions this frame.
+	// This matches what FCEUX sees: OAM written by the *previous* NMI's DMA.
 	unsigned char render_oam[256];
+
+	// Nametable + palette snapshots captured at set_vblank(true), before NMI fires.
+	// The NMI handler writes new tile columns to the nametable (horizontal scroll
+	// update); render() must see the pre-NMI nametable to match FCEUX.
+	unsigned char render_nt[0x800];   // $2000-$27FF (2KB, both nametables)
+	unsigned char render_pal[0x20];   // $3F00-$3F1F (32 bytes)
 
 	// Per-scanline scroll snapshot: entry [sl] is captured by end_scanline(sl)
 	// after the CPU has run that scanline's ~114 cycles.  render() uses
 	// scanline_scroll[row*8] for each tile row so mid-frame scroll changes
 	// (e.g. sprite-0-hit scroll split) are applied correctly.
 	ScanlineScroll scanline_scroll[240];
+
+	// Per-scanline palette snapshot: entry [sl] is captured by end_scanline(sl)
+	// from the live PPU palette memory (with proper $3F10/$3F14/$3F18/$3F1C mirrors).
+	// render() uses scanline_pal[sl] for each screen row so mid-frame palette writes
+	// (e.g. universal BG color change during visible scanning) are applied correctly.
+	unsigned char scanline_pal[240][32];
+
+	// Post-NMI scroll snapshot: saved immediately after cpu.nmi() returns,
+	// so begin_frame() can seed scanline_scroll[] with the NMI-written scroll
+	// rather than the live scroll_x_reg (which may have been overwritten by
+	// game-loop code running during the vblank remainder of the previous frame).
+	unsigned char nmi_scroll_x;
+	unsigned char nmi_fine_x;
+	unsigned char nmi_scroll_y;
+	unsigned char nmi_scroll_nt;
+
+	// Vertical scroll captured at pre-render dot ~280 (before game writes new
+	// vertical scroll targeting the NEXT frame). begin_frame() uses this for
+	// seed_scroll_y, mirroring the NES hardware T→V vertical copy at dots 280-304.
+	unsigned char pre_render_scroll_y;
+	unsigned char pre_render_scroll_nt_y; // bit 1 of NT (vertical NT select)
+
+	// Mid-render V-register reset tracking.
+	// Set in the $2006 second-write handler when the write occurs during visible
+	// rendering; cleared by end_scanline() after it has reseeded abs_y.
+	bool           mid_render_v_reset;
+	unsigned short mid_render_v_new;   // value of T at the time of the reset (= new V)
+
+	// Per-scanline trace buffer (filled by capture_scanline_trace, written by export_scanline_trace)
+	ScanlineTraceEntry scanline_trace[240];
 };

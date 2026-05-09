@@ -294,43 +294,111 @@ bool frameIntervalElapsed()
 
 // ─── Automated test helpers ──────────────────────────────────────────────────
 
-// Run one full emulated frame (visible lines + vblank/NMI period).
-static void run_one_frame()
+// Run one full emulated frame matching FCEUX's FCEUPPU_Loop structure.
+//
+// suppress_vbl (ppudead): VBL flag never raised, NMI never fires.
+//   The ROM stays in its $C03E/$C041 spin loop for the entire frame.
+//   Matches FCEUX's ppudead=2/1 path: X6502_Run(scanlines_per_frame*(256+85)).
+//
+// Normal frame (VBL-first, matching FCEUX's ppudead=0 else-branch):
+//   1. Post-render scanline  (~113 CPU = 341 PPU)
+//   2. Raise VBL flag        ROM reads $2002 → exits spin loop
+//   3. NMI timing window     (12 PPU)
+//   4. NMI (if PPUCTRL.7)   game handler runs, writes scroll/NT/OAM
+//   5. snap_nmi_scroll()    save post-NMI scroll (kept for debug export)
+//   6. Rest of vblank        (6808 PPU)
+//   7. snapshot_render()    capture post-NMI NT/PAL into render buffers; clear VBL
+//   8. Pre-render scanline   (256 + 69 + (16-kook) PPU, mirroring FCEUX exactly)
+//   9. begin_frame()         seed scanline_scroll[] from Loopy T; snap OAM
+//  10. 240 visible scanlines 341 PPU each (via run_ppu, deficit carried forward)
+//
+// run_ppu() uses a persistent cycle_counter (carries instruction-boundary overshoot
+// between calls, like FCEUX's X6502_Run) and a ppu_remainder accumulator.
+// This gives per-frame CPU = exactly 29780 or 29781 (alternating via kook),
+// identical to FCEUX — no cumulative drift.
+static void run_one_frame(bool suppress_vbl = false)
 {
-	unsigned int frame_start = cpu.cycle;
+	// Persistent state (survives across frames, like FCEUX's global counters)
+	static int ppu_remainder = 0;  // PPU sub-cycle carry (0-2)
+	static int cycle_counter = 0;  // CPU cycle budget; negative = overshoot debt
+	static int kook          = 0;  // alternating pre-render length (0 → 16 PPU, 1 → 15 PPU)
 
-	// Pre-visible: clear spr0-hit flag, seed per-scanline scroll snapshots
-	// with the NMI-written scroll (the game's NMI resets scroll to 0 for the HUD).
-	ppu.begin_frame();
-
-	// Visible scanlines: ~114 CPU cycles each (341 PPU dots / 3).
-	// check_sprite0_hit fires the spr0-hit flag when the scanline enters
-	// sprite-0's vertical range; the game's main loop then writes the
-	// game-area scroll ($2005=E0,$2005=00) during that scanline's CPU budget.
-	// end_scanline() snapshots the current scroll into scanline_scroll[sl]
-	// so render() can apply the correct scroll per tile row.
-	for (int sl = 0; sl < 240; ++sl)
-	{
-		ppu.check_sprite0_hit(sl);
-
-		unsigned int sl_start = cpu.cycle;
-		while ((cpu.cycle - sl_start) < 114u)
+	// Convert PPU cycles to CPU cycles (with accumulation) and run instructions.
+	// Overshoot from a completed instruction is automatically absorbed by the
+	// NEXT call (cycle_counter stays negative until the next budget replenishes it).
+	auto run_ppu = [&](int ppu_cycles) {
+		ppu_remainder += ppu_cycles;
+		cycle_counter += ppu_remainder / 3;
+		ppu_remainder  %= 3;
+		while (cycle_counter > 0) {
+			unsigned int before = cpu.cycle;
 			cpu.step(false);
+			cycle_counter -= (int)(cpu.cycle - before);
+		}
+	};
 
-		ppu.end_scanline(sl);
+	if (suppress_vbl)
+	{
+		// ppudead: FCEUX runs X6502_Run(scanlines_per_frame * 341) = 89342 PPU,
+		// no VBL set, no kook adjustment.
+		run_ppu(262 * 341);
+		return;
 	}
-	// 240 × 114 = 27360 cycles visible (vs old 27384, negligible difference)
 
-	// Raise vblank; fire NMI if enabled by PPUCTRL bit 7
-	ppu.set_vblank(true);
+	// ── Step 1: post-render scanline (scanline 240): 341 PPU ──────────────
+	run_ppu(341);
+
+	// ── Step 2: raise VBL flag ────────────────────────────────────────────
+	ppu.raise_vblank();
+
+	// ── Step 3: NMI timing window: 12 PPU ────────────────────────────────
+	run_ppu(12);
+
+	// ── Step 4: fire NMI if PPUCTRL bit 7 is set ─────────────────────────
 	if (ppu.nmi_enabled())
 		cpu.nmi();
 
-	// VBlank period (remaining cycles up to ~29780, matching NTSC NES: 89342 PPU / 3)
-	while ((cpu.cycle - frame_start) < 29780u)
-		cpu.step(false);
+	// ── Step 5: snap pre-NMI scroll (for debug export only) ──────────────
+	ppu.snap_nmi_scroll();
 
-	ppu.set_vblank(false);
+	// ── Step 6: rest of vblank: (262-242)*341 - 12 = 6808 PPU ───────────
+	run_ppu(6808);
+
+	// ── Step 5b: snap post-NMI scroll ─────────────────────────────────────
+	// The NMI handler has now completed (ran during run_ppu(6808)).
+	// Capture T's vertical bits here — this is the NMI-written vertical scroll
+	// for the current frame. The game-loop may overwrite T for the NEXT frame
+	// during the pre-render scanline, so we must capture before that happens.
+	ppu.snap_pre_render_vscroll();
+
+	// ── Step 7: snapshot NT/PAL for rendering; clear VBL flag ────────────
+	ppu.snapshot_render();
+
+	// ── Step 8: pre-render scanline: 256 + 69 + (16-kook) PPU ───────────
+	// Mirrors FCEUX's X6502_Run(256) + X6502_Run(69) + X6502_Run(16-kook).
+	// begin_frame() reads Loopy T immediately after (≈ FCEUX's RefreshAddr=TempAddr
+	// at pre-render dot 325) so it sees the NMI-written scroll.
+	run_ppu(256);
+	run_ppu(69);
+	run_ppu(16 - kook);
+	kook ^= 1;
+
+	// ── Steps 9-10: visible scanlines ────────────────────────────────────
+	// begin_frame() seeds scanline_scroll[] from Loopy T (= FCEUX's TempAddr
+	// at pre-render dot 325) and snapshots OAM.
+	ppu.begin_frame();
+
+	// 240 visible scanlines × 341 PPU each (= FCEUX's DoLine()).
+	for (int sl = 0; sl < 240; ++sl)
+	{
+		ppu.begin_scanline(sl);
+		ppu.check_sprite0_hit(sl);
+		run_ppu(341);
+		ppu.end_scanline(sl);
+		// Render this scanline live, reading from current mem[] so VRAM writes
+		// made by the CPU during this scanline's run_ppu() are immediately visible.
+		ppu.render_scanline(sl, ppu.framebuf);
+	}
 }
 
 // ZP addresses for color_test.s variables (from nrom.cfg + source order)
@@ -392,7 +460,7 @@ static void run_autotest(const char* outdir)
 			sprintf_s(txtpath, sizeof(txtpath),
 			          "%s\\nes1_color%02X_emph%02X.txt",
 			          outdir, (unsigned)c, (unsigned)emph);
-			ppu.export_frame(screen_buf, txtpath);
+			ppu.export_frame(screen_buf, txtpath, &cpu);
 
 			total++;
 			if ((total % 64) == 0)
@@ -412,26 +480,97 @@ static void run_frametest(const char* outdir, int nframes, int interval)
 	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
 	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
 
+	// Enable per-scanline live rendering: run_one_frame() will call render_scanline()
+	// inside the visible scanline loop, writing pixels into screen_buf directly.
+	ppu.framebuf = screen_buf;
+
 	printf("Running %d frames, saving every %d...\n", nframes, interval);
 
+	// Frames 1-2 are "ppudead": VBlank is suppressed so the ROM spins in its
+	// VBlank-wait poll loop, exactly matching FCEUX's ppudead=2 behaviour.
+	// These frames are exported (as grey backdrop screens) so that frame numbers
+	// align 1:1 with FCEUX's exported frame numbering.
 	int saved = 0;
 	for (int f = 1; f <= nframes; f++)
 	{
-		run_one_frame();
+		bool dead = (f <= 2);
+		run_one_frame(/*suppress_vbl=*/dead);
 		if (f % interval == 0)
 		{
 			ppu.render(screen_buf);
 			char path[512];
 			sprintf_s(path, sizeof(path),
 			          "%s\\nes1_frame_%04d.txt", outdir, f);
-			ppu.export_frame(screen_buf, path);
+			ppu.export_frame(screen_buf, path, &cpu);
 			saved++;
 			printf("  Frame %4d / %d\n", f, nframes);
 		}
 	}
 
+	ppu.framebuf = nullptr;  // restore: back to batch render() mode
 	delete[] screen_buf;
 	printf("Frametest done: %d screenshots saved to %s\\\n", saved, outdir);
+}
+
+// Run to frame 'target_frame' from reset and dump a per-scanline CPU+PPU trace
+// for that frame to <outpath>.  Uses capture_scanline_trace() / export_scanline_trace().
+static void run_scanlinetrace(const char* outpath, int target_frame)
+{
+	// A modified run_one_frame that captures per-scanline state.
+	// We inline the frame loop here and intercept the visible-scanline step.
+	static int ppu_remainder_tr = 0;
+	static int cycle_counter_tr = 0;
+	static int kook_tr          = 0;
+
+	auto run_ppu_tr = [&](int ppu_cycles) {
+		ppu_remainder_tr += ppu_cycles;
+		cycle_counter_tr += ppu_remainder_tr / 3;
+		ppu_remainder_tr  %= 3;
+		while (cycle_counter_tr > 0) {
+			unsigned int before = cpu.cycle;
+			cpu.step(false);
+			cycle_counter_tr -= (int)(cpu.cycle - before);
+		}
+	};
+
+	printf("Running %d frames for scanline trace...\n", target_frame);
+
+	for (int f = 1; f <= target_frame; f++)
+	{
+		bool is_target = (f == target_frame);
+		bool dead = (f <= 2);
+
+		if (dead) {
+			run_ppu_tr(262 * 341);
+			continue;
+		}
+
+		run_ppu_tr(341);
+		ppu.raise_vblank();
+		run_ppu_tr(12);
+		if (ppu.nmi_enabled()) cpu.nmi();
+		ppu.snap_nmi_scroll();
+		run_ppu_tr(6808);
+		ppu.snap_pre_render_vscroll();
+		ppu.snapshot_render();
+		run_ppu_tr(256);
+		run_ppu_tr(69);
+		run_ppu_tr(16 - kook_tr);
+		kook_tr ^= 1;
+		ppu.begin_frame();
+
+		for (int sl = 0; sl < 240; ++sl) {
+			ppu.begin_scanline(sl);
+			ppu.check_sprite0_hit(sl);
+			run_ppu_tr(341);
+			if (is_target)
+				ppu.capture_scanline_trace(sl, &cpu);
+			ppu.end_scanline(sl);
+		}
+	}
+
+	ppu.export_scanline_trace(outpath);
+	printf("Scanline trace written to %s\n", outpath);
 }
 
 int main(int argc, char* argv[])
@@ -525,6 +664,14 @@ int main(int argc, char* argv[])
 		int nframes  = (argc >= 5) ? atoi(argv[4]) : 300;
 		int interval = (argc >= 6) ? atoi(argv[5]) : 30;
 		run_frametest(argv[3], nframes, interval);
+		return 0;
+	}
+	if (argc >= 4 && strcmp(argv[2], "--scanlinetrace") == 0)
+	{
+		// Dumps per-scanline CPU+PPU state for frame N to <outpath>
+		// Usage: nes1 <rom> --scanlinetrace <outpath> <frame_number>
+		int target_frame = (argc >= 5) ? atoi(argv[4]) : 4;
+		run_scanlinetrace(argv[3], target_frame);
 		return 0;
 	}
 

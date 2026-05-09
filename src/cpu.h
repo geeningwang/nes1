@@ -25,6 +25,13 @@ public:
 public:
 	unsigned int  cycle;
 
+	unsigned short get_pc() const { return rpc; }
+	unsigned char  get_a()  const { return ra; }
+	unsigned char  get_x()  const { return rx; }
+	unsigned char  get_y()  const { return ry; }
+	unsigned char  get_s()  const { return rsp; }
+	unsigned char  get_p()  const { return rp; }
+
 	// Joypad 1 button state (set from outside each frame)
 	// bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
 	unsigned char joypad1_state;

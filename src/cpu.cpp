@@ -230,11 +230,13 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 			ppu->cpu_write(addr, val);
 		return;
 	}
-	// OAM DMA
+	// OAM DMA — FCEUX charges 512 cycles (256 DMR + 256 DMW, 1 cycle each).
+	// Real hardware charges 513/514 but we match FCEUX for frame-accurate output.
 	if (addr == 0x4014)
 	{
 		if (ppu)
 			ppu->oam_dma(mem + ((val & 0x07) << 8));  // DMA from mirrored RAM
+		cycle += 512;
 		return;
 	}
 	// APU registers
@@ -431,14 +433,15 @@ opcode opcode_items[] =
 void cpu_6502::reset()
 {
 	rpc = 0xc000;	// Trail run nestest.nes, starts from 0xc000
-	rp = 0x24;		// Status bit 5 is always 1, the interrupt-disable bit 2 is set.
+	rp = 0x04;		// I_FLAG only — matches FCEUX (no bit 5); bit 5 is pushed as 0 on real HW reset
 
 	// See https://superuser.com/a/606770
 	STACK_PUSH_PC();  // Push PC to 0x100 and 0x1ff
 	STACK_PUSH(rp);   // Push P to 0x1fe and finally SP get 0xfd.
 
 	rpc = *((unsigned short *)(mem + 0xfffc));
-	cycle += 7;
+	// Do NOT charge cycles here — FCEUX processes the reset vector fetch inside
+	// X6502_Run() at zero extra cost, so cycle 0 is the first instruction.
 
 	return;
 }

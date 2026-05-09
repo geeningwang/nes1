@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ppu.h"
+#include "cpu.h"
 #include <stdio.h>
 
 // Emphasis-aware palette: nes_color_emph[emph_idx][nesColor*3 + {R,G,B}]
@@ -179,7 +180,19 @@ ppu_2c02::ppu_2c02()
 	render_scroll_y  = 0;
 	render_scroll_nt = 0;
 	memset(render_oam, 0xFF, 256);  // 0xFF = hide all sprites (y=256, off-screen)
+	memset(render_nt,  0x00, sizeof(render_nt));
+	memset(render_pal, 0x00, sizeof(render_pal));
 	memset(scanline_scroll, 0, sizeof(scanline_scroll));
+	mid_render_v_reset = false;
+	mid_render_v_new   = 0;
+	nmi_scroll_x  = 0;
+	nmi_fine_x    = 0;
+	nmi_scroll_y  = 0;
+	nmi_scroll_nt = 0;
+	pre_render_scroll_y    = 0;
+	pre_render_scroll_nt_y = 0;
+	memset(scanline_pal, 0, sizeof(scanline_pal));
+	framebuf = nullptr;
 }
 
 ppu_2c02::~ppu_2c02()
@@ -288,7 +301,13 @@ void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bi
 				if (is_sprite) continue;  // sprite transparent pixel: leave background as-is
 				color = 0;                // background: use universal BG color ($3F00)
 			}
-			color = ppu_mem_read(0x3f00 + color);  // 6-bit NES palette index
+			// Read palette from snapshot (pre-NMI). Apply same mirrors as hardware.
+			unsigned char pal_idx = (unsigned char)(color & 0x1F);
+			if (pal_idx == 0x10) pal_idx = 0x00;
+			if (pal_idx == 0x14) pal_idx = 0x04;
+			if (pal_idx == 0x18) pal_idx = 0x08;
+			if (pal_idx == 0x1C) pal_idx = 0x0C;
+			color = render_pal[pal_idx];  // 6-bit NES palette index
 			if (reg_mask & 0x01) color &= 0x30;    // greyscale: force to grey ramp
 			int px = x + i;
 			int py = y + j;
@@ -309,13 +328,45 @@ void ppu_2c02::draw_chr(unsigned char* chr, int x, int y, unsigned char color_bi
 
 void ppu_2c02::render(unsigned char* pScreenBits)
 {
+	// When per-scanline live rendering is active, pixels were already written
+	// to framebuf by render_scanline() during the visible scanline loop.
+	if (framebuf != nullptr) return;
+
 	if (!pScreenBits)
 		return;
 
+	// When rendering is completely disabled (PPUMASK bits 3 & 4 both 0),
+	// output the backdrop color ($3F00) — same as real hardware and FCEUX.
+	if ((reg_mask & 0x18) == 0)
+	{
+		unsigned char bg = render_pal[0];
+		if (reg_mask & 0x01) bg &= 0x30;  // greyscale
+		unsigned emph = (reg_mask >> 5) & 7;
+		for (int p = 0; p < SCREEN_WIDTH * SCREEN_HEIGHT; ++p)
+		{
+			pScreenBits[p*4+0] = nes_color_emph[emph][bg*3+2];
+			pScreenBits[p*4+1] = nes_color_emph[emph][bg*3+1];
+			pScreenBits[p*4+2] = nes_color_emph[emph][bg*3+0];
+			pScreenBits[p*4+3] = 0;
+		}
+		return;
+	}
+
 	// Fill with universal background color first
-	unsigned char bg_color = ppu_mem_read(0x3F00);
+	// Use render_pal snapshot (pre-NMI palette)
+	auto snap_pal = [&](unsigned short addr) -> unsigned char {
+		addr &= 0x1F;
+		if (addr == 0x10) addr = 0x00;
+		if (addr == 0x14) addr = 0x04;
+		if (addr == 0x18) addr = 0x08;
+		if (addr == 0x1C) addr = 0x0C;
+		return render_pal[addr];
+	};
+	unsigned char bg_color = snap_pal(0);
 	if (reg_mask & 0x01) bg_color &= 0x30;  // greyscale: force to grey ramp
 	unsigned emph_idx = (reg_mask >> 5) & 7;
+	// Initial fill with BG color (covers pixels not drawn by the BG tile loop,
+	// e.g. leftmost column if PPUMASK bit 1 is clear, or sprite-only areas).
 	for (int p = 0; p < SCREEN_WIDTH * SCREEN_HEIGHT; ++p)
 	{
 		pScreenBits[p * 4 + 0] = nes_color_emph[emph_idx][bg_color * 3 + 2];
@@ -329,55 +380,85 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 	unsigned char bg_opaque[SCREEN_WIDTH * SCREEN_HEIGHT];
 	memset(bg_opaque, 0, sizeof(bg_opaque));
 
-	// Draw background (PPUMASK bit 3)
+	// Draw background (PPUMASK bit 3) — rendered per-scanline so that per-scanline
+	// palette updates (scanline_pal[sl]) and horizontal scroll changes are applied
+	// correctly, matching FCEUX's live-palette rendering behaviour.
 	if (reg_mask & 0x08)
 	{
-		// Render 33 columns x 31 rows using per-scanline scroll snapshots.
-		// For each tile row, read the scroll captured at its first pixel row
-		// so that mid-frame scroll splits (e.g. sprite-0-hit) are applied correctly.
-		for (int row = 0; row <= 30; ++row)
+		unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
+
+		for (int sl = 0; sl < SCREEN_HEIGHT; ++sl)
 		{
-			// Map tile row -> first scanline; clamp to [0,239]
-			int sl = row * 8;
-			if (sl >= 240) sl = 239;
+			// Per-scanline palette: update render_pal so draw_chr uses the correct colours.
+			memcpy(render_pal, scanline_pal[sl], 32);
+
+			// Horizontal scroll for this scanline (can change per-scanline after sprite-0-hit)
 			int fine_x_r = (int)scanline_scroll[sl].fine_x;
 			int coarse_x = (int)(scanline_scroll[sl].scroll_x >> 3);
-			int fine_y_r = (int)(scanline_scroll[sl].scroll_y & 0x07);
-			int coarse_y = (int)(scanline_scroll[sl].scroll_y >> 3);
 			int nt_sel   = (int)scanline_scroll[sl].scroll_nt;
+
+			// Vertical position: per-scanline abs_y stored by begin_frame() /
+			// end_scanline().  Normally = seed_scroll_y + sl; after a mid-render
+			// $2006 write it resets to the new V position (V-reset reseeding).
+			int abs_y        = (int)scanline_scroll[sl].scroll_y % 480;
+			int extra_nt_y   = abs_y / 240;                 // 0 or 1
+			int local_y      = abs_y % 240;
+			int tile_row     = local_y / 8;                  // nametable tile row (0-29)
+			int pixel_in_tile = local_y % 8;                 // pixel row within tile (0-7)
+			int nt_y_base    = (((nt_sel >> 1) & 1) + extra_nt_y) & 1;
 
 			for (int col = 0; col <= 32; ++col)
 			{
-				// Absolute tile coords in the 64-wide x 60-tall virtual space
-				int abs_col = coarse_x + col;
-				int abs_row = coarse_y + row;
-
-				// Determine nametable and local tile offset, wrapping every 32 cols / 30 rows
-				int nt_h    = ((nt_sel & 0x01) + (abs_col / 32)) & 0x01;
-				int nt_v    = (((nt_sel >> 1) & 0x01) + (abs_row / 30)) & 0x01;
-				int cur_nt  = nt_v * 2 + nt_h;
-
+				int abs_col   = coarse_x + col;
+				int nt_h      = ((nt_sel & 0x01) + (abs_col / 32)) & 0x01;
+				int nt_v      = nt_y_base;
+				int cur_nt    = nt_v * 2 + nt_h;
 				int local_col = abs_col % 32;
-				int local_row = abs_row % 30;
 
-				unsigned short nt_base  = 0x2000 + cur_nt * 0x400;
-				unsigned char  name     = ppu_mem_read(nt_base + local_row * 32 + local_col);
+				unsigned short nt_base = 0x2000 + cur_nt * 0x400;
+				unsigned char  name    = render_nt[(nt_base - 0x2000) + tile_row * 32 + local_col];
 
-				// Attribute table: each byte covers a 4x4-tile block
 				unsigned short att_base   = nt_base + 0x3C0;
-				unsigned char  att        = ppu_mem_read(att_base + (local_row / 4) * 8 + (local_col / 4));
-				int            square     = (local_row & 0x02) + ((local_col >> 1) & 0x01);
+				unsigned char  att        = render_nt[(att_base - 0x2000) + (tile_row / 4) * 8 + (local_col / 4)];
+				int            square     = (tile_row & 0x02) + ((local_col >> 1) & 0x01);
 				unsigned char  color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
 
-				unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
-				unsigned char* chr     = mem + bg_base + name * 16;
+				unsigned char* chr = mem + bg_base + name * 16;
 
+				// Render the single pixel row (pixel_in_tile) of this tile onto screen row sl
 				int screen_x = col * 8 - fine_x_r;
-				int screen_y = row * 8 - fine_y_r;
+				for (int i = 0; i < 8; ++i)
+				{
+					int px = screen_x + i;
+					if (px < 0 || px >= SCREEN_WIDTH) continue;
 
-				draw_chr(chr, screen_x, screen_y, color_bit23, pScreenBits, false, bg_opaque);
+					unsigned char bit0 = (chr[pixel_in_tile]     >> (7 - i)) & 1;
+					unsigned char bit1 = ((chr[8 + pixel_in_tile] >> (7 - i)) & 1) << 1;
+					unsigned char color = color_bit23 | bit1 | bit0;
+					bool opaque = (color & 0x03) != 0;
+
+					if (!opaque) color = 0;  // transparent: use universal BG colour ($3F00)
+
+					unsigned char pal_idx = color & 0x1F;
+					if (pal_idx == 0x10) pal_idx = 0x00;
+					if (pal_idx == 0x14) pal_idx = 0x04;
+					if (pal_idx == 0x18) pal_idx = 0x08;
+					if (pal_idx == 0x1C) pal_idx = 0x0C;
+					unsigned char nes_color = render_pal[pal_idx];
+					if (reg_mask & 0x01) nes_color &= 0x30;
+
+					unsigned idx = (unsigned)(sl * SCREEN_WIDTH + px);
+					pScreenBits[idx * 4 + 0] = nes_color_emph[emph_idx][nes_color * 3 + 2];
+					pScreenBits[idx * 4 + 1] = nes_color_emph[emph_idx][nes_color * 3 + 1];
+					pScreenBits[idx * 4 + 2] = nes_color_emph[emph_idx][nes_color * 3 + 0];
+					pScreenBits[idx * 4 + 3] = 0;
+
+					if (opaque) bg_opaque[idx] = 1;
+				}
 			}
 		}
+		// Restore render_pal to the last scanline's snapshot for sprite rendering below.
+		memcpy(render_pal, scanline_pal[SCREEN_HEIGHT - 1], 32);
 	}
 
 	// Draw sprites (PPUMASK bit 4), back-to-front so sprite 0 ends up on top.
@@ -419,7 +500,7 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 					unsigned index = (unsigned)(py * SCREEN_WIDTH + px);
 					if (behind_bg && bg_opaque[index]) continue;  // hidden behind opaque BG
 
-					unsigned char col = ppu_mem_read(0x3f00 + color);
+				unsigned char col = snap_pal(color);
 					if (reg_mask & 0x01) col &= 0x30;
 					pScreenBits[index * 4 + 0] = nes_color_emph[emph_idx][col * 3 + 2];
 					pScreenBits[index * 4 + 1] = nes_color_emph[emph_idx][col * 3 + 1];
@@ -431,6 +512,170 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 	}
 
 	return;
+}
+
+// Per-scanline live rendering: renders one visible scanline directly into fb,
+// reading tile data from live mem[] (not the frozen render_nt[] snapshot).
+// Called inside the visible scanline loop AFTER end_scanline() so it sees VRAM
+// writes the CPU made during this scanline's run_ppu(341) call.
+// Palette comes from scanline_pal[sl] (captured BEFORE the CPU run by begin_scanline).
+// Scroll comes from scanline_scroll[sl] (captured AFTER the CPU run by end_scanline).
+void ppu_2c02::render_scanline(int sl, unsigned char* fb)
+{
+	if (!fb || sl < 0 || sl >= SCREEN_HEIGHT) return;
+
+	unsigned emph_idx = (reg_mask >> 5) & 7;
+
+	// When rendering is completely disabled, fill with backdrop.
+	if ((reg_mask & 0x18) == 0) {
+		unsigned char bg = scanline_pal[sl][0];
+		if (reg_mask & 0x01) bg &= 0x30;
+		for (int px = 0; px < SCREEN_WIDTH; ++px) {
+			unsigned i = (unsigned)(sl * SCREEN_WIDTH + px);
+			fb[i*4+0] = nes_color_emph[emph_idx][bg*3+2];
+			fb[i*4+1] = nes_color_emph[emph_idx][bg*3+1];
+			fb[i*4+2] = nes_color_emph[emph_idx][bg*3+0];
+			fb[i*4+3] = 0;
+		}
+		return;
+	}
+
+	// Per-scanline palette snapshot (captured before CPU ran this scanline).
+	const unsigned char* pal = scanline_pal[sl];
+
+	// Fill scanline with universal BG color first.
+	unsigned char pal0 = pal[0] & 0x3F;
+	if (pal[0x10] == pal[0]) pal0 = pal[0];  // normal: $3F00 is BG
+	// Apply mirrors for $3F10/$3F14/$3F18/$3F1C
+	{
+		unsigned char idx = 0;
+		if (pal[0x10] == 0) idx = 0;  // transparent — unused
+		pal0 = pal[0];
+	}
+	if (reg_mask & 0x01) pal0 &= 0x30;
+	for (int px = 0; px < SCREEN_WIDTH; ++px) {
+		unsigned i = (unsigned)(sl * SCREEN_WIDTH + px);
+		fb[i*4+0] = nes_color_emph[emph_idx][pal0*3+2];
+		fb[i*4+1] = nes_color_emph[emph_idx][pal0*3+1];
+		fb[i*4+2] = nes_color_emph[emph_idx][pal0*3+0];
+		fb[i*4+3] = 0;
+	}
+
+	// bg_opaque[x]: true where a non-transparent BG pixel was drawn (for sprite priority).
+	bool bg_opaque[SCREEN_WIDTH] = {};
+
+	// ── Background ───────────────────────────────────────────────────────────
+	if (reg_mask & 0x08) {
+		unsigned short bg_base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
+
+		int fine_x_r   = (int)scanline_scroll[sl].fine_x;
+		int coarse_x   = (int)(scanline_scroll[sl].scroll_x >> 3);
+		int nt_sel     = (int)scanline_scroll[sl].scroll_nt;
+		int abs_y      = (int)scanline_scroll[sl].scroll_y % 480;
+		int extra_nt_y = abs_y / 240;
+		int local_y    = abs_y % 240;
+		int tile_row   = local_y / 8;
+		int pix_row    = local_y % 8;
+		int nt_y_base  = (((nt_sel >> 1) & 1) + extra_nt_y) & 1;
+
+		for (int col = 0; col <= 32; ++col) {
+			int abs_col = coarse_x + col;
+			int nt_h    = ((nt_sel & 0x01) + (abs_col / 32)) & 0x01;
+			int nt_v    = nt_y_base;
+			int cur_nt  = nt_v * 2 + nt_h;
+			int loc_col = abs_col % 32;
+
+			unsigned short nt_base = (unsigned short)(0x2000 + cur_nt * 0x400);
+
+			// Read tile name and attribute from LIVE nametable memory.
+			unsigned char name = mem[mirror_nt_addr((unsigned short)(nt_base + tile_row * 32 + loc_col))];
+
+			unsigned short at_base = (unsigned short)(nt_base + 0x3C0);
+			unsigned char  att     = mem[mirror_nt_addr((unsigned short)(at_base + (tile_row / 4) * 8 + (loc_col / 4)))];
+			int square             = (tile_row & 0x02) + ((loc_col >> 1) & 0x01);
+			unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
+
+			unsigned char* chr = mem + bg_base + name * 16;
+			int screen_x = col * 8 - fine_x_r;
+
+			for (int i = 0; i < 8; ++i) {
+				int px = screen_x + i;
+				if (px < 0 || px >= SCREEN_WIDTH) continue;
+
+				unsigned char bit0 = (chr[pix_row]       >> (7 - i)) & 1;
+				unsigned char bit1 = ((chr[8 + pix_row]  >> (7 - i)) & 1) << 1;
+				unsigned char color = color_bit23 | bit1 | bit0;
+				bool opaque = (color & 0x03) != 0;
+				if (!opaque) color = 0;
+
+				unsigned char pal_idx = color & 0x1F;
+				if (pal_idx == 0x10) pal_idx = 0x00;
+				if (pal_idx == 0x14) pal_idx = 0x04;
+				if (pal_idx == 0x18) pal_idx = 0x08;
+				if (pal_idx == 0x1C) pal_idx = 0x0C;
+				unsigned char nes_color = pal[pal_idx];
+				if (reg_mask & 0x01) nes_color &= 0x30;
+
+				unsigned idx = (unsigned)(sl * SCREEN_WIDTH + px);
+				fb[idx*4+0] = nes_color_emph[emph_idx][nes_color*3+2];
+				fb[idx*4+1] = nes_color_emph[emph_idx][nes_color*3+1];
+				fb[idx*4+2] = nes_color_emph[emph_idx][nes_color*3+0];
+				fb[idx*4+3] = 0;
+				if (opaque) bg_opaque[px] = true;
+			}
+		}
+	}
+
+	// ── Sprites ──────────────────────────────────────────────────────────────
+	// Use render_oam[] (OAM snapshot from begin_frame) and live CHR mem[].
+	// Iterate back-to-front so sprite 0 wins over higher-numbered sprites.
+	if (reg_mask & 0x10) {
+		unsigned short spr_base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
+		for (int spr = 63; spr >= 0; --spr) {
+			int sy = (int)render_oam[spr * 4 + 0] + 1;
+			if (sl < sy || sl >= sy + 8) continue;
+
+			int            sx     = (int)render_oam[spr * 4 + 3];
+			unsigned char  nm     = render_oam[spr * 4 + 1];
+			unsigned char  att    = render_oam[spr * 4 + 2];
+			unsigned char  cb23   = ((att & 0x03) << 2) | 0x10;
+			bool h_flip           = (att & 0x40) != 0;
+			bool v_flip           = (att & 0x80) != 0;
+			bool behind_bg        = (att & 0x20) != 0;
+
+			if (sy >= SCREEN_HEIGHT) continue;
+
+			unsigned char* chr = mem + spr_base + nm * 16;
+			int j     = sl - sy;
+			int j_chr = v_flip ? (7 - j) : j;
+
+			for (int i = 0; i < 8; ++i) {
+				int i_chr = h_flip ? (7 - i) : i;
+				unsigned char b0 = (chr[j_chr]      >> (7 - i_chr)) & 1;
+				unsigned char b1 = ((chr[8 + j_chr] >> (7 - i_chr)) & 1) << 1;
+				unsigned char color = cb23 | b1 | b0;
+				if ((color & 0x03) == 0) continue;
+
+				int px = sx + i;
+				if (px < 0 || px >= SCREEN_WIDTH) continue;
+				if (behind_bg && bg_opaque[px]) continue;
+
+				unsigned char pal_idx = color & 0x1F;
+				if (pal_idx == 0x10) pal_idx = 0x00;
+				if (pal_idx == 0x14) pal_idx = 0x04;
+				if (pal_idx == 0x18) pal_idx = 0x08;
+				if (pal_idx == 0x1C) pal_idx = 0x0C;
+				unsigned char nes_color = pal[pal_idx];
+				if (reg_mask & 0x01) nes_color &= 0x30;
+
+				unsigned idx = (unsigned)(sl * SCREEN_WIDTH + px);
+				fb[idx*4+0] = nes_color_emph[emph_idx][nes_color*3+2];
+				fb[idx*4+1] = nes_color_emph[emph_idx][nes_color*3+1];
+				fb[idx*4+2] = nes_color_emph[emph_idx][nes_color*3+0];
+				fb[idx*4+3] = 0;
+			}
+		}
+	}
 }
 
 bool ppu_2c02::nmi_enabled()
@@ -515,6 +760,10 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 			t = (t & 0xFF00) | val;
 			v = t;
 			w = 0;
+			// Record mid-render V resets so end_scanline() can reseed abs_y
+			// for the remaining scanlines of this frame.
+			mid_render_v_reset = true;
+			mid_render_v_new   = (unsigned short)(t & 0x7FFF);
 		}
 		break;
 	case 0x2007:  // PPUDATA
@@ -527,22 +776,52 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 void ppu_2c02::set_vblank(bool vb)
 {
 	if (vb) {
-		// Snapshot the scroll state at the end of visible scanlines,
-		// before NMI fires and overwrites scroll_x_reg / scroll_y_reg.
-		// The game's main loop writes $2005 scroll during visible scanlines;
-		// its NMI handler resets $2005 for sprite purposes.
+		// Snapshot scroll — captured after the game's main loop has written
+		// $2005 (game-area scroll) but before NMI resets it for the HUD.
 		render_scroll_x  = scroll_x_reg;
 		render_fine_x    = fine_x;
 		render_scroll_y  = scroll_y_reg;
 		render_scroll_nt = scroll_nt;
-		// Snapshot OAM: the NMI OAM DMA will overwrite oam[] with next-frame
-		// positions.  We need the pre-NMI OAM (previous frame's positions)
-		// to match what a scanline-accurate renderer sees during visible lines.
-		memcpy(render_oam, oam, 256);
+		// Snapshot nametable ($2000-$27FF) and palette ($3F00-$3F1F) before
+		// the NMI handler writes new tile columns (horizontal scroll update).
+		// render() reads from these snapshots so it sees pre-NMI nametable data.
+		for (int i = 0; i < 0x800; ++i)
+			render_nt[i] = mem[0x2000 + i];
+		for (int i = 0; i < 0x20; ++i)
+			render_pal[i] = mem[0x3F00 + i];
 		reg_status |= 0x80;
 	} else {
 		reg_status &= 0x7F;
 	}
+}
+
+// Raise the VBL flag without snapshotting anything.
+// Used in VBL-first frame structure: the ROM will read $2002 and exit its
+// spin loop on the next instruction step.
+void ppu_2c02::raise_vblank()
+{
+	reg_status |= 0x80;
+}
+
+// Capture NT/PAL/scroll into render buffers and clear the VBL flag.
+// Called at the end of the VBL period (after NMI has written new tile data),
+// just before visible scanlines begin.  This gives render() the post-NMI
+// nametable and palette so the rendered frame reflects the current frame's
+// NMI writes rather than the previous frame's.
+void ppu_2c02::snapshot_render()
+{
+	// Scroll snapshot for export/debug output
+	render_scroll_x  = scroll_x_reg;
+	render_fine_x    = fine_x;
+	render_scroll_y  = scroll_y_reg;
+	render_scroll_nt = scroll_nt;
+	// Nametable and palette snapshots for pixel rendering
+	for (int i = 0; i < 0x800; ++i)
+		render_nt[i] = mem[0x2000 + i];
+	for (int i = 0; i < 0x20; ++i)
+		render_pal[i] = mem[0x3F00 + i];
+	// Clear VBL flag (end of vblank period)
+	reg_status &= 0x7F;
 }
 
 void ppu_2c02::oam_dma(unsigned char* page_data)
@@ -555,20 +834,72 @@ void ppu_2c02::begin_frame()
 {
 	// Clear sprite-0 hit (reset at pre-render scanline on real HW)
 	reg_status &= ~0x40;
-	// Seed all scanline scroll entries with the NMI-written scroll values.
-	// After sprite-0-hit the game writes new scroll values; end_scanline()
-	// will overwrite the affected entries with the updated values.
+	// Snapshot OAM at the start of visible scanlines — before the game's main
+	// loop has advanced any sprite positions this frame.  This matches real HW:
+	// each frame's visible scanlines render with the OAM written by the previous
+	// frame's NMI DMA, before this frame's CPU has touched it.
+	memcpy(render_oam, oam, 256);
+	// Seed all scanline scroll entries from the Loopy T register, exactly as the
+	// real PPU does at pre-render dot 304 (RefreshAddr = TempAddr in FCEUX terms).
+	// T is updated by both $2005 (scroll) AND $2006 (PPUADDR) writes, so it
+	// correctly handles games that set scroll via PPUADDR rather than PPUSCROLL.
+	// After sprite-0-hit the game writes game-area scroll; end_scanline() will
+	// overwrite the affected entries with those updated values.
+	unsigned char seed_scroll_x  = (unsigned char)(((t & 0x001F) << 3) | fine_x);
+	unsigned char seed_fine_x    = fine_x;
+	// Vertical scroll: use pre_render_scroll_y captured after run_ppu(6808) (end of vblank)
+	// so the NMI handler has completed and T reflects the NMI-written vertical scroll.
+	unsigned char seed_scroll_y  = pre_render_scroll_y;
+	// NT: horizontal from T (valid at begin_frame time); vertical from the post-NMI capture.
+	unsigned char seed_scroll_nt = (unsigned char)(((t >> 10) & 0x01) | (pre_render_scroll_nt_y << 1));
+	// Clear mid-render V-reset flag at the start of each frame.
+	mid_render_v_reset = false;
+	mid_render_v_new   = 0;
 	for (int sl = 0; sl < 240; ++sl)
 	{
-		scanline_scroll[sl].scroll_x  = scroll_x_reg;
-		scanline_scroll[sl].fine_x    = fine_x;
-		scanline_scroll[sl].scroll_y  = scroll_y_reg;
-		scanline_scroll[sl].scroll_nt = scroll_nt;
+		scanline_scroll[sl].scroll_x  = seed_scroll_x;
+		scanline_scroll[sl].fine_x    = seed_fine_x;
+		// Store per-scanline abs_y = seed_scroll_y + sl (the natural per-scanline
+		// vertical position if no mid-frame V reset occurs).
+		scanline_scroll[sl].scroll_y  = (short)(seed_scroll_y + sl);
+		scanline_scroll[sl].scroll_nt = seed_scroll_nt;
+		// Seed per-scanline palette from the vblank snapshot (render_pal).
+		// end_scanline() will refresh this from live PPU memory each scanline,
+		// so mid-frame palette writes are captured at the correct scanline boundary.
+		memcpy(scanline_pal[sl], render_pal, 32);
 	}
+}
+
+void ppu_2c02::snap_nmi_scroll()
+{
+	// Save the scroll register state immediately after the NMI handler returns.
+	// begin_frame() uses these to seed scanline_scroll[] so that HUD rows
+	// (before sprite-0-hit) render with the NMI-written scroll (typically 0),
+	// not with scroll values written by game-loop code during the vblank remainder.
+	nmi_scroll_x  = scroll_x_reg;
+	nmi_fine_x    = fine_x;
+	nmi_scroll_y  = scroll_y_reg;
+	nmi_scroll_nt = scroll_nt;
+
+	// Also pre-initialise the pre-render vertical capture to the NMI scroll,
+	// so frame 1 (where snap_pre_render_vscroll may not be called) is correct.
+	pre_render_scroll_y   = (unsigned char)((((t >> 5) & 0x1F) << 3) | ((t >> 12) & 7));
+	pre_render_scroll_nt_y = (unsigned char)((t >> 11) & 1);
+}
+
+void ppu_2c02::snap_pre_render_vscroll()
+{
+	// Capture T's vertical bits at the moment the NES hardware would copy them
+	// into V (pre-render dots 280-304). After this point the game may write new
+	// vertical scroll values to prepare the NEXT frame, so we must not read T
+	// for the current frame's vertical scroll after this call.
+	pre_render_scroll_y   = (unsigned char)((((t >> 5) & 0x1F) << 3) | ((t >> 12) & 7));
+	pre_render_scroll_nt_y = (unsigned char)((t >> 11) & 1);
 }
 
 void ppu_2c02::check_sprite0_hit(int sl)
 {
+	if ((reg_mask & 0x18) == 0) return;  // rendering disabled, sprite-0-hit can't fire
 	if (reg_status & 0x40) return;  // already set this frame
 	// Use live OAM (post-NMI DMA) for sprite-0 position, matching real HW
 	int sy = (int)oam[0] + 1;  // OAM byte 0 = Y-1; sy = first scanline sprite appears on
@@ -576,20 +907,47 @@ void ppu_2c02::check_sprite0_hit(int sl)
 		reg_status |= 0x40;
 }
 
+void ppu_2c02::begin_scanline(int sl)
+{
+	if (sl < 0 || sl >= 240) return;
+	// Snapshot the live palette BEFORE this scanline's CPU run.
+	// Capturing here (start-of-scanline) means mid-scanline palette writes take effect
+	// starting from the NEXT scanline, matching how FCEUX's per-dot rendering sees them:
+	// a write at dot N only affects pixels from dot N onward, so a mid-scanline write
+	// mostly belongs to the next scanline's visual result.
+	for (int i = 0; i < 0x20; ++i)
+		scanline_pal[sl][i] = ppu_mem_read(0x3F00 + i);
+}
+
 void ppu_2c02::end_scanline(int sl)
 {
 	if (sl < 0 || sl >= 240) return;
+	// Horizontal scroll CAN change per-scanline: $2005 first write updates T[4:0] which
+	// the real PPU copies to V at each scanline's H-blank (dot 257).
 	scanline_scroll[sl].scroll_x  = scroll_x_reg;
 	scanline_scroll[sl].fine_x    = fine_x;
-	scanline_scroll[sl].scroll_y  = scroll_y_reg;
-	scanline_scroll[sl].scroll_nt = scroll_nt;
+	// Vertical scroll is FIXED for the entire frame: $2005 second write only updates T's
+	// vertical bits; the real PPU only copies T→V vertically at pre-render (dots 280-304).
+	// scroll_y and scroll_nt are left unchanged from begin_frame() seeding.
+	// (mid_render_v_reset is set by $2006 writes but currently not acted upon here;
+	//  the flag is cleared in begin_frame() for the next frame.)
+	mid_render_v_reset = false;
 }
 
-void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
+void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename, cpu_6502* cpu)
 {
 	FILE* f = nullptr;
 	fopen_s(&f, filename, "w");
 	if (!f) return;
+
+	// --- CPU State ---
+	if (cpu)
+	{
+		fprintf(f, "=== CPU State ===\n");
+		fprintf(f, "PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X cycles=%u\n\n",
+			cpu->get_pc(), cpu->get_a(), cpu->get_x(), cpu->get_y(),
+			cpu->get_s(), cpu->get_p(), cpu->cycle);
+	}
 
 	// --- PPU Registers ---
 	fprintf(f, "=== PPU Registers ===\n");
@@ -605,10 +963,20 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
 		reg_status, (reg_status >> 7) & 1);
 	fprintf(f, "v=%04X  t=%04X  fine_x=%d  mirroring=%s\n",
 		v, t, fine_x, mirror_vertical ? "vertical" : "horizontal");
-	fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n\n",
-		render_scroll_x, render_scroll_x >> 3, render_fine_x,
-		render_scroll_y, render_scroll_y >> 3, render_scroll_y & 7,
-		render_scroll_nt);
+	// Decode render_scroll from the live V register, matching FCEUX's RefreshAddr decode.
+	{
+		int ex_coarse_x = (int)(v & 0x1F);
+		int ex_fine_x   = (int)fine_x;
+		int ex_coarse_y = (int)((v >> 5) & 0x1F);
+		int ex_fine_y   = (int)((v >> 12) & 7);
+		int ex_scroll_x = ex_coarse_x * 8 + ex_fine_x;
+		int ex_scroll_y = ex_coarse_y * 8 + ex_fine_y;
+		int ex_nt       = (int)((v >> 10) & 3);
+		fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n\n",
+			ex_scroll_x, ex_coarse_x, ex_fine_x,
+			ex_scroll_y, ex_coarse_y, ex_fine_y,
+			ex_nt);
+	}
 
 	// --- Nametable dump ($2000-$23BF) ---
 	fprintf(f, "=== Nametable ($2000-$23BF, 32x30 tile IDs) ===\n");
@@ -724,4 +1092,66 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename)
 			fclose(bf);
 		}
 	}
+}
+
+void ppu_2c02::capture_scanline_trace(int sl, cpu_6502* cpu)
+{
+	if (sl < 0 || sl >= 240) return;
+	ScanlineTraceEntry& e = scanline_trace[sl];
+
+	// CPU registers
+	if (cpu) {
+		e.cpu_pc     = cpu->get_pc();
+		e.cpu_a      = cpu->get_a();
+		e.cpu_x      = cpu->get_x();
+		e.cpu_y      = cpu->get_y();
+		e.cpu_s      = cpu->get_s();
+		e.cpu_p      = cpu->get_p();
+		e.cpu_cycles = cpu->cycle;
+	}
+
+	// Live PPU Loopy registers
+	e.ppu_v     = v;
+	e.ppu_t     = t;
+	e.ppu_fine_x = fine_x;
+	e.ppu_w     = w;
+
+	// Raw scroll registers
+	e.scroll_x_reg = scroll_x_reg;
+	e.scroll_y_reg = scroll_y_reg;
+	e.scroll_nt    = scroll_nt;
+
+	// Universal BG color (mirrors resolved)
+	e.pal_3f00 = ppu_mem_read(0x3F00);
+}
+
+void ppu_2c02::export_scanline_trace(const char* filename)
+{
+	FILE* f = nullptr;
+	fopen_s(&f, filename, "w");
+	if (!f) return;
+
+	fprintf(f, "%-4s  %-8s %-32s  %-20s  %-12s  P3F00\n",
+		"SL", "CPU_CYC", "CPU_REGS", "LOOPY(V,T,fx,w)", "SCROLL(x,y,nt)");
+	fprintf(f, "%-4s  %-8s %-32s  %-20s  %-12s  -----\n",
+		"----", "--------", "--------------------------------",
+		"--------------------", "------------");
+
+	for (int sl = 0; sl < 240; ++sl) {
+		const ScanlineTraceEntry& e = scanline_trace[sl];
+		char cpu_regs[64];
+		sprintf_s(cpu_regs, sizeof(cpu_regs),
+			"PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X",
+			e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p);
+		char loopy[48];
+		sprintf_s(loopy, sizeof(loopy), "V=%04X T=%04X fx=%d w=%d",
+			e.ppu_v, e.ppu_t, e.ppu_fine_x, e.ppu_w);
+		char scroll[32];
+		sprintf_s(scroll, sizeof(scroll), "x=%3d y=%3d nt=%d",
+			e.scroll_x_reg, e.scroll_y_reg, e.scroll_nt);
+		fprintf(f, "%3d   %8u  %-32s  %-20s  %-18s  %02X\n",
+			sl, e.cpu_cycles, cpu_regs, loopy, scroll, e.pal_3f00);
+	}
+
+	fclose(f);
 }
