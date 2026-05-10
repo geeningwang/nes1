@@ -910,27 +910,22 @@ void ppu_2c02::check_sprite0_hit(int sl)
 void ppu_2c02::begin_scanline(int sl)
 {
 	if (sl < 0 || sl >= 240) return;
-	// Snapshot the live palette BEFORE this scanline's CPU run.
-	// Capturing here (start-of-scanline) means mid-scanline palette writes take effect
-	// starting from the NEXT scanline, matching how FCEUX's per-dot rendering sees them:
-	// a write at dot N only affects pixels from dot N onward, so a mid-scanline write
-	// mostly belongs to the next scanline's visual result.
+	// Snapshot BOTH palette and horizontal scroll BEFORE this scanline's CPU run.
+	// This matches real hardware: the PPU copies T's horizontal bits to V at the
+	// H-blank of the PREVIOUS scanline (dot 257), so a $2005/$2006 write during
+	// scanline N's CPU run only affects scanline N+1's rendering — not N itself.
+	// Similarly, palette writes during scanline N's CPU take effect from N+1.
 	for (int i = 0; i < 0x20; ++i)
 		scanline_pal[sl][i] = ppu_mem_read(0x3F00 + i);
+	scanline_scroll[sl].scroll_x = scroll_x_reg;
+	scanline_scroll[sl].fine_x   = fine_x;
 }
 
 void ppu_2c02::end_scanline(int sl)
 {
 	if (sl < 0 || sl >= 240) return;
-	// Horizontal scroll CAN change per-scanline: $2005 first write updates T[4:0] which
-	// the real PPU copies to V at each scanline's H-blank (dot 257).
-	scanline_scroll[sl].scroll_x  = scroll_x_reg;
-	scanline_scroll[sl].fine_x    = fine_x;
-	// Vertical scroll is FIXED for the entire frame: $2005 second write only updates T's
-	// vertical bits; the real PPU only copies T→V vertically at pre-render (dots 280-304).
-	// scroll_y and scroll_nt are left unchanged from begin_frame() seeding.
-	// (mid_render_v_reset is set by $2006 writes but currently not acted upon here;
-	//  the flag is cleared in begin_frame() for the next frame.)
+	// Scroll and palette are now captured in begin_scanline (before cpu).
+	// Only clear the mid-render V-reset flag here.
 	mid_render_v_reset = false;
 }
 

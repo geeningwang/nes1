@@ -243,8 +243,7 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 	if ((addr >= 0x4000 && addr <= 0x4013) || addr == 0x4015 || addr == 0x4017)
 	{
 		if (apu) apu->write(addr, val);
-		// Also handle $4017 as frame counter (already done in apu)
-		// Joypad strobe is at $4016, handled below
+		return;
 	}
 	// Joypad strobe
 	if (addr == 0x4016)
@@ -910,6 +909,7 @@ bool cpu_6502::step(bool log)
 		break;
 	case SED:
 		SET_DECIMAL(1);
+		break;
 	case SEI:
 		SET_INTERRUPT(1);
 		break;
