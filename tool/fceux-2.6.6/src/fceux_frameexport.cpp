@@ -79,8 +79,13 @@ void FCEUX_CaptureScanlineTrace(int sl)
     e.ppu_w      = vtoggle;
     e.ppuctrl    = PPU[0];
     e.ppumask    = PPU[1];
+    e.ppustatus  = PPU[2];
+    e.oamaddr    = PPU[3];
     for (int i = 0; i < 32; ++i)
         e.palette[i] = PALRAM[i];
+    memcpy(e.nametable, NTARAM, 0x800);
+    if (RAM) memcpy(e.cpu_ram, RAM, 0x800);
+    else     memset(e.cpu_ram, 0, 0x800);
 
     // Decode render scroll from end-of-scanline V register
     {
@@ -116,49 +121,124 @@ void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc)
     w.cpu_pc = pc;
 }
 
-// Write PART1+PART2 scanline trace to an already-open file.
-static void WriteScanlineTrace(FILE* f)
+// Export one txt file per visible scanline for the given frame.
+// Output: <outdir>\fceux_frame_XXXX_sl_YYY.txt  (240 files total)
+// Each file contains the full CPU/PPU/NT/RAM state captured at the end of that scanline.
+void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
 {
-    // PART1: per-scanline summary, one row per visible scanline.
-    // Columns match nes1's export_scanline_trace() PART1 format:
-    //   SL V_S V_E T_E FX W CTL MSK SSX SS_Y SSNT NTw CYC PC A X Y S P PAL
-    fprintf(f, "\n=== PART1 ===\n");
-    fprintf(f, "# %-3s  %-5s %-5s %-5s %2s %1s  %2s  %2s  %3s %6s %4s  %3s  %-8s  %-4s %-2s %-2s %-2s %-2s %-2s  PAL\n",
-        "SL", "V_S", "V_E", "T_E", "FX", "W", "CTL", "MSK",
-        "SSX", "SS_Y", "SSNT", "NTw", "CYC", "PC", "A", "X", "Y", "S", "P");
-
     for (int sl = 0; sl < 240; ++sl) {
-        const FCEUXScanlineTrace& e = g_sl_trace[sl];
-        char pal64[65] = {};
-        for (int i = 0; i < 32; ++i)
-            snprintf(pal64 + i * 2, 3, "%02X", e.palette[i]);
-        fprintf(f, "  %3d  %04X  %04X  %04X  %d  %d  %02X  %02X  %3d %6d %4d  %3d  %8u  %04X %02X %02X %02X %02X %02X  %s\n",
-            sl,
-            e.ppu_v_start & 0x7FFF, e.ppu_v & 0x7FFF, e.ppu_t & 0x7FFF,
-            e.ppu_fine_x, e.ppu_w,
-            e.ppuctrl_start, e.ppumask_start,
-            (int)e.ss_x, (int)e.ss_y, (int)e.ss_nt,
-            e.nt_write_cnt,
-            e.cpu_cycles,
-            e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p,
-            pal64);
-    }
+        char path[512];
+        snprintf(path, sizeof(path), "%s\\fceux_frame_%04d_sl_%03d.txt", outdir, framenum, sl);
+        FILE* f = fopen(path, "w");
+        if (!f) continue;
 
-    // PART2: per-write log (every $2007 NT/AT write logged per scanline)
-    // Columns match nes1's PART2 format:
-    //   SEQ  SL  DOT  V_BEF  V_AFT  NTADDR  VAL  PC
-    fprintf(f, "\n=== PART2 ===\n");
-    fprintf(f, "# %-5s %-3s %-5s %-5s %-5s %-5s %-3s  PC\n",
-        "SEQ", "SL", "DOT", "V_BEF", "V_AFT", "NTADDR", "VAL");
-
-    int seq = 0;
-    for (int sl = 0; sl < 240; ++sl) {
         const FCEUXScanlineTrace& e = g_sl_trace[sl];
-        for (int i = 0; i < e.nt_write_cnt && i < 64; ++i) {
-            const FCEUXNtWrite& w = e.nt_writes[i];
-            fprintf(f, "  %5d  %3d  %4d  %04X  ----  %04X  %02X  %04X\n",
-                ++seq, sl, w.dot, w.addr, w.addr, w.val, w.cpu_pc);
+
+        fprintf(f, "=== Scanline %d (Frame %d) ===\n", sl, framenum);
+
+        // --- PPU Registers at start of scanline (what the PPU saw during rendering) ---
+        fprintf(f, "\n=== PPU Registers (start of scanline) ===\n");
+        fprintf(f, "PPUCTRL  ($2000): %02X  (NMI:%d BGtable:%04X SPRtable:%04X inc:%d)\n",
+            e.ppuctrl_start,
+            (e.ppuctrl_start >> 7) & 1,
+            (e.ppuctrl_start & 0x10) ? 0x1000 : 0x0000,
+            (e.ppuctrl_start & 0x08) ? 0x1000 : 0x0000,
+            (e.ppuctrl_start & 0x04) ? 32 : 1);
+        fprintf(f, "PPUMASK  ($2001): %02X  (BG:%d SPR:%d)\n",
+            e.ppumask_start, (e.ppumask_start >> 3) & 1, (e.ppumask_start >> 4) & 1);
+        {
+            uint32 vs = e.ppu_v_start;
+            int cx = vs & 0x1F, cy = (vs >> 5) & 0x1F, fy = (vs >> 12) & 0x7, nt = (vs >> 10) & 0x3;
+            fprintf(f, "v=%04X  (scroll: x=%d y=%d nt=%d)\n",
+                vs & 0x7FFF, cx * 8 + (int)e.ppu_fine_x, cy * 8 + fy, nt);
         }
+
+        // --- PPU Registers at end of scanline ---
+        fprintf(f, "\n=== PPU Registers (end of scanline) ===\n");
+        fprintf(f, "PPUCTRL  ($2000): %02X  (NMI:%d BGtable:%04X SPRtable:%04X inc:%d)\n",
+            e.ppuctrl,
+            (e.ppuctrl >> 7) & 1,
+            (e.ppuctrl & 0x10) ? 0x1000 : 0x0000,
+            (e.ppuctrl & 0x08) ? 0x1000 : 0x0000,
+            (e.ppuctrl & 0x04) ? 32 : 1);
+        fprintf(f, "PPUMASK  ($2001): %02X  (BG:%d SPR:%d)\n",
+            e.ppumask, (e.ppumask >> 3) & 1, (e.ppumask >> 4) & 1);
+        fprintf(f, "PPUSTATUS($2002): %02X  (VBL:%d)\n",
+            e.ppustatus, (e.ppustatus >> 7) & 1);
+        fprintf(f, "OAMADDR  ($2003): %02X\n", e.oamaddr);
+        fprintf(f, "v=%04X  t=%04X  fine_x=%d  w=%d\n",
+            e.ppu_v & 0x7FFF, e.ppu_t & 0x7FFF, (int)e.ppu_fine_x, (int)e.ppu_w);
+        {
+            uint32 ve = e.ppu_v;
+            int cx = ve & 0x1F, cy = (ve >> 5) & 0x1F, fy = (ve >> 12) & 0x7, nt = (ve >> 10) & 0x3;
+            int sx = cx * 8 + (int)e.ppu_fine_x, sy = cy * 8 + fy;
+            fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n",
+                sx, cx, (int)e.ppu_fine_x, sy, cy, fy, nt);
+        }
+
+        // --- CPU State at end of scanline ---
+        fprintf(f, "\n=== CPU State (end of scanline) ===\n");
+        fprintf(f, "PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X cycles=%u\n",
+            e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p, e.cpu_cycles);
+
+        // --- Palette ---
+        fprintf(f, "\n=== Palette ($3F00-$3F1F) ===\n");
+        fprintf(f, "BG:  ");
+        for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", e.palette[i]);
+        fprintf(f, "\nSPR: ");
+        for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", e.palette[0x10 + i]);
+        fprintf(f, "\n");
+
+        // --- Nametable NT0 ($2000-$23FF): 30 rows tile IDs + attribute table ---
+        fprintf(f, "\n=== Nametable NT0 ($2000-$23FF) ===\n");
+        for (int row = 0; row < 30; ++row) {
+            for (int col = 0; col < 32; ++col)
+                fprintf(f, "%02X ", e.nametable[row * 32 + col]);
+            fprintf(f, "\n");
+        }
+        fprintf(f, "AT:\n");
+        for (int row = 0; row < 8; ++row) {
+            for (int col = 0; col < 8; ++col)
+                fprintf(f, "%02X ", e.nametable[0x3C0 + row * 8 + col]);
+            fprintf(f, "\n");
+        }
+
+        // --- Nametable NT1 ($2400-$27FF) ---
+        fprintf(f, "\n=== Nametable NT1 ($2400-$27FF) ===\n");
+        for (int row = 0; row < 30; ++row) {
+            for (int col = 0; col < 32; ++col)
+                fprintf(f, "%02X ", e.nametable[0x400 + row * 32 + col]);
+            fprintf(f, "\n");
+        }
+        fprintf(f, "AT:\n");
+        for (int row = 0; row < 8; ++row) {
+            for (int col = 0; col < 8; ++col)
+                fprintf(f, "%02X ", e.nametable[0x400 + 0x3C0 + row * 8 + col]);
+            fprintf(f, "\n");
+        }
+
+        // --- CPU RAM ($0000-$07FF) ---
+        fprintf(f, "\n=== CPU RAM ($0000-$07FF) ===\n");
+        for (int row = 0; row < 64; ++row) {
+            for (int col = 0; col < 32; ++col)
+                fprintf(f, "%02X ", e.cpu_ram[row * 32 + col]);
+            fprintf(f, "\n");
+        }
+
+        // --- NT Writes During This Scanline ---
+        fprintf(f, "\n=== NT Writes During Scanline ===\n");
+        if (e.nt_write_cnt == 0) {
+            fprintf(f, "(none)\n");
+        } else {
+            fprintf(f, "#   DOT  NTADDR  VAL   PC\n");
+            for (int i = 0; i < e.nt_write_cnt; ++i) {
+                const FCEUXNtWrite& w = e.nt_writes[i];
+                fprintf(f, "%2d  %4d   %04X   %02X   %04X\n",
+                    i, w.dot, w.addr, w.val, w.cpu_pc);
+            }
+        }
+
+        fclose(f);
     }
 }
 
@@ -298,9 +378,6 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
             fprintf(f, "\n");
         }
     }
-
-    // --- Scanline trace (PART1+PART2) appended to the same file ---
-    WriteScanlineTrace(f);
 
     fclose(f);
 

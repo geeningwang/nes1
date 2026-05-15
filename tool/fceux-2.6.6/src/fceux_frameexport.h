@@ -40,6 +40,12 @@ struct FCEUXScanlineTrace {
     short          ss_x;     // scroll_x used for rendering (0-255)
     short          ss_y;     // scroll_y used for rendering (0-255)
     unsigned char  ss_nt;    // nametable selection used for rendering
+    // Additional PPU registers at end of scanline
+    unsigned char  ppustatus;       // $2002
+    unsigned char  oamaddr;         // $2003
+    // Full memory snapshots at end of scanline (captured after X6502_Run)
+    unsigned char  nametable[0x800]; // physical NT RAM (NTARAM, 2KB)
+    unsigned char  cpu_ram[0x800];   // CPU RAM ($0000-$07FF, 2KB)
     // NT write log during this scanline's CPU window
     int            nt_write_cnt;   // capped at 64
     FCEUXNtWrite   nt_writes[64];
@@ -51,4 +57,5 @@ bool FCEUX_ScanlineTraceActive();
 void FCEUX_CaptureBeginScanline(int sl);
 void FCEUX_CaptureScanlineTrace(int sl);
 void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc);
+void FCEUX_ExportScanlineLevel(int framenum, const char* outdir);
 const FCEUXScanlineTrace* FCEUX_GetScanlineTrace();
