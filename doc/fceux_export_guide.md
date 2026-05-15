@@ -140,8 +140,8 @@ fceux64.exe -lua auto_export.lua "Mappy (Japan).nes"
 >
 > **Selecting the scanline-level frame:** Edit `export_sl_frame` in
 > `tool/fceux-2.6.6/src/fceu.cpp` (line ~870) to choose which frame gets the
-> 240 per-scanline files. Default is frame 5. The output directory is named
-> `fceux_sl_dump_fN` (e.g. `fceux_sl_dump_f5`) and is created automatically.
+> 240 per-scanline files. Default is frame 1. The output directory is named
+> `fceux_sl_dump_fN` (e.g. `fceux_sl_dump_f1`) and is created automatically.
 
 ---
 
@@ -177,19 +177,19 @@ Each `.txt` contains:
 
 ### 4.2 Scanline-level snapshots
 
-For the one frame configured via `export_sl_frame` (default: frame 5), a pair of
+For the one frame configured via `export_sl_frame` (default: frame 1), a pair of
 files is written for each of the 240 visible scanlines into a dedicated directory
 (created automatically):
 
 ```
-C:\Work\nes1\test\mappy_out\fceux_sl_dump_f5\   ← name derived from export_sl_frame
-├── fceux_frame_0005_sl_000.txt    ← scanline 0 dump
-├── fceux_frame_0005_sl_000.bmp    ← full frame, scanline 0 highlighted
-├── fceux_frame_0005_sl_001.txt
-├── fceux_frame_0005_sl_001.bmp
+C:\Work\nes1\test\mappy_out\fceux_sl_dump_f1\   ← name derived from export_sl_frame
+├── fceux_frame_0001_sl_000.txt    ← scanline 0 dump
+├── fceux_frame_0001_sl_000.bmp    ← full frame, scanline 0 highlighted
+├── fceux_frame_0001_sl_001.txt
+├── fceux_frame_0001_sl_001.bmp
 ├── ...
-├── fceux_frame_0005_sl_239.txt
-└── fceux_frame_0005_sl_239.bmp
+├── fceux_frame_0001_sl_239.txt
+└── fceux_frame_0001_sl_239.bmp
 ```
 
 Each `_sl_YYY.txt` has **exactly the same 7 sections** as the frame-level `.txt`,
@@ -290,19 +290,19 @@ Each `.txt` has the same 8-section format as the FCEUX frame-level file:
 
 ```powershell
 & 'C:\Work\nes1\src\x64\Debug\nes1.exe' 'C:\Work\nes1\test\mappy\Mappy (Japan).nes' `
-    --scanlinetrace 'C:\Work\nes1\test\mappy_out\nes1_sl_dump_f5' 5
+    --scanlinetrace 'C:\Work\nes1\test\mappy_out\nes1_sl_dump_f1' 1
 ```
 
 Arguments: `--scanlinetrace <outdir> <frame_number>`
 
 **Output** (240 × 2 = 480 files):
 ```
-nes1_sl_dump_f5\
-├── nes1_frame_0005_sl_000.txt    ← scanline 0 dump
-├── nes1_frame_0005_sl_000.bmp    ← full frame, scanline 0 row tinted red
+nes1_sl_dump_f1\
+├── nes1_frame_0001_sl_000.txt    ← scanline 0 dump
+├── nes1_frame_0001_sl_000.bmp    ← full frame, scanline 0 row tinted red
 ├── ...
-├── nes1_frame_0005_sl_239.txt
-└── nes1_frame_0005_sl_239.bmp
+├── nes1_frame_0001_sl_239.txt
+└── nes1_frame_0001_sl_239.bmp
 ```
 
 Each `_sl_YYY.txt` has the same 7 sections as the frame-level txt (using the
