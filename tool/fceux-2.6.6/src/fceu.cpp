@@ -868,7 +868,7 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 			FCEUX_ExportFrame(export_framenum, export_nframes, "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out");
 		// Scanline-level dump: 240 per-scanline files for one specific frame.
 		// Change export_sl_frame to select which frame to dump.
-		const int export_sl_frame = 5;
+		const int export_sl_frame = 1;
 		if (skip < 2 && export_framenum == export_sl_frame) {
 			char sl_outdir[256];
 			snprintf(sl_outdir, sizeof(sl_outdir),
