@@ -857,15 +857,17 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 
 	// Per-frame instrumentation export for nes1 comparison.
 	// Uses a static counter that increments every FCEUI_Emulate call.
+	// Export whenever skip < 2 (skip==0: normal, skip==1: no blit; both still run PPU emulation).
+	// skip==2 skips PPU rendering entirely, so we exclude it.
 	{
 		static int export_framenum = 0;
 		const int export_nframes = 270;
-		if (!skip)
+		if (skip < 2)
 			export_framenum++;
-		if (!skip && export_nframes > 0 && export_framenum >= 1 && export_framenum <= export_nframes)
+		if (skip < 2 && export_nframes > 0 && export_framenum >= 1 && export_framenum <= export_nframes)
 			FCEUX_ExportFrame(export_framenum, export_nframes, "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out");
 		// Also export per-scanline trace for frame 1
-		if (!skip && export_framenum == 1)
+		if (skip < 2 && export_framenum == 1)
 		{
 			char slpath[512];
 			snprintf(slpath, sizeof(slpath), "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_scanline_trace_f%04d.txt", export_framenum);
