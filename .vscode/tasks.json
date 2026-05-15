@@ -1,0 +1,271 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build nes1 Debug x64",
+			"type": "shell",
+			"command": "\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe\" C:\\Work\\nes1\\src\\nes1.sln /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build nes1 Debug x64 PS",
+			"type": "shell",
+			"command": "& 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe' 'C:\\Work\\nes1\\src\\nes1.sln' /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Kill and Build nes1",
+			"type": "shell",
+			"command": "Stop-Process -Name nes1 -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; & 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe' 'C:\\Work\\nes1\\src\\nes1.sln' /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Force Kill and Build",
+			"type": "shell",
+			"command": "Get-Process nes1 -ErrorAction SilentlyContinue | Select-Object -Property Id,Name,CPU; taskkill /F /IM nes1.exe; Start-Sleep -Seconds 2; & 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe' 'C:\\Work\\nes1\\src\\nes1.sln' /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			]
+		},
+		{
+			"label": "Build nes1 v2",
+			"type": "shell",
+			"command": "taskkill /F /IM nes1.exe 2>&1; Start-Sleep -Seconds 3; Get-Process nes1 -ErrorAction SilentlyContinue; & 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe' 'C:\\Work\\nes1\\src\\nes1.sln' /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			]
+		},
+		{
+			"label": "Run frametest 270",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --frametest 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out' 270 1"
+		},
+		{
+			"label": "Dense report",
+			"type": "shell",
+			"command": "Set-Location C:\\Work\\nes1\\test; & '.\\make_dense_report.ps1' 2>&1 | Select-Object -Last 20"
+		},
+		{
+			"label": "Dense report v2",
+			"type": "shell",
+			"command": "Set-Location C:\\Work\\nes1\\test; powershell -ExecutionPolicy Bypass -File '.\\make_dense_report.ps1' 2>&1 | Select-Object -Last 10"
+		},
+		{
+			"label": "Build reverted",
+			"type": "shell",
+			"command": "& 'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe' 'C:\\Work\\nes1\\src\\nes1.sln' /p:Configuration=Debug /p:Platform=x64 /t:Build /v:minimal",
+			"problemMatcher": [
+				"$msCompile"
+			]
+		},
+		{
+			"label": "Frametest + dense report",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --frametest 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out' 270 1; Set-Location C:\\Work\\nes1\\test; powershell -ExecutionPolicy Bypass -File '.\\make_dense_report.ps1' 2>&1 | Select-Object -Last 5"
+		},
+		{
+			"label": "Compare F245",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0245.txt' | Select-Object -First 2; Write-Host '---'; Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0245.txt' | Select-Object -First 2"
+		},
+		{
+			"label": "Compare F246",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0246.txt' | Select-Object -First 2; Write-Host '---'; Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0246.txt' | Select-Object -First 2"
+		},
+		{
+			"label": "Compare F244 scroll",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt' | Select-String 'v=|render_scroll'; Write-Host '---'; Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt' | Select-String 'v=|render_scroll'"
+		},
+		{
+			"label": "Diff F244",
+			"type": "shell",
+			"command": "Compare-Object (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt') (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt') | Select-Object -First 30"
+		},
+		{
+			"label": "Diff F243",
+			"type": "shell",
+			"command": "Compare-Object (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0243.txt') (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0243.txt') | Select-Object -First 10"
+		},
+		{
+			"label": "Find scroll divergence start",
+			"type": "shell",
+			"command": "$frames = 240..246; foreach ($f in $frames) { $fn = '{0:D4}' -f $f; $n = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$fn.txt\" | Select-String 'v=').Line; $fc = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$fn.txt\" | Select-String 'v=').Line; if ($n -ne $fc) { Write-Host \"F$fn DIFF: NES1=$n FCEUX=$fc\" } else { Write-Host \"F$fn SAME\" } }"
+		},
+		{
+			"label": "Track scroll divergence",
+			"type": "shell",
+			"command": "$frames = 247..265; foreach ($f in $frames) { $fn = '{0:D4}' -f $f; $n = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$fn.txt\" | Select-String 'v=').Line; $fc = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$fn.txt\" | Select-String 'v=').Line; if ($n -ne $fc) { Write-Host \"F$fn DIFF: NES1=$n  FCEUX=$fc\" } else { Write-Host \"F$fn SAME\" } }"
+		},
+		{
+			"label": "Full diff F244",
+			"type": "shell",
+			"command": "Compare-Object (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt') (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt')"
+		},
+		{
+			"label": "Line diff F244",
+			"type": "shell",
+			"command": "$n = Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt'; $f = Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt'; for ($i = 0; $i -lt $n.Length; $i++) { if ($n[$i] -ne $f[$i]) { Write-Host \"Line $i: NES1='$($n[$i])' FCEUX='$($f[$i])'\" } }"
+		},
+		{
+			"label": "Line diff F244 v2",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -Command \"& { $n = Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt'; $f = Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt'; for ($i = 0; $i -lt $n.Length; $i++) { if ($n[$i] -ne $f[$i]) { Write-Host \\\"Line $i: NES1='$($n[$i])' FCEUX='$($f[$i])'\\\" } } }\""
+		},
+		{
+			"label": "Line diff F244 script",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\diff_frames.ps1' -Frame 244"
+		},
+		{
+			"label": "F244 col diff",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\diff_frames.ps1' -Frame 244"
+		},
+		{
+			"label": "F244 col diff v2",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\diff_frames.ps1' -Frame 244"
+		},
+		{
+			"label": "Header diff F244",
+			"type": "shell",
+			"command": "Compare-Object (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt' | Select-Object -First 43) (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt' | Select-Object -First 43)"
+		},
+		{
+			"label": "Scanline trace F244",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --scanlinetrace 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f244.txt' 244 2>&1 | Select-Object -Last 5"
+		},
+		{
+			"label": "Find v changes in SL trace",
+			"type": "shell",
+			"command": "Select-String 'V=[0-9A-F]+' 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f244.txt' | Where-Object { $_.Line -notmatch 'V=222A ' } | Select-Object -First 20"
+		},
+		{
+			"label": "FCEUX F244 header",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0244.txt' | Select-Object -First 12"
+		},
+		{
+			"label": "NES1 F244 header",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0244.txt' | Select-Object -First 12"
+		},
+		{
+			"label": "Scanline trace F245",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --scanlinetrace 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f245.txt' 245; Write-Host 'Done'"
+		},
+		{
+			"label": "End of F245 trace",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f245.txt' | Select-Object -Last 20"
+		},
+		{
+			"label": "FCEUX F246 CPU",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0246.txt' | Select-Object -First 5"
+		},
+		{
+			"label": "Disasm around C72B",
+			"type": "shell",
+			"command": "# Dump 20 bytes of PRG ROM around 0xC72B by looking at the NES ROM\n$rom = [System.IO.File]::ReadAllBytes('C:\\Work\\nes1\\test\\Mappy (Japan).nes')\n# NES ROM: 16 byte header, then PRG ROM (16KB or 32KB)\n# For NROM-256 (32KB), PRG starts at 0x10 and maps to 0x8000-0xFFFF\n# Address 0xC72B = PRG offset 0xC72B - 0x8000 + 0x10 = 0x472B\n$prgOffset = 0xC72B - 0x8000 + 0x10\nWrite-Host \"PRG offset: 0x$('{0:X4}' -f $prgOffset)\"\n$bytes = $rom[$prgOffset..($prgOffset+30)]\n$bytes | ForEach-Object { '{0:X2}' -f $_ } | Write-Host -Separator ' '"
+		},
+		{
+			"label": "Disasm C72B",
+			"type": "shell",
+			"command": "$rom = [System.IO.File]::ReadAllBytes('C:\\Work\\nes1\\test\\Mappy (Japan).nes')\n$prg16k = $rom[4]; $chr8k = $rom[5]\nWrite-Host \"PRG 16KB pages: $prg16k, CHR 8KB pages: $chr8k\"\n# For 2 PRG pages (32KB), maps to 0x8000-0xFFFF\n# For 1 PRG page (16KB), maps to both 0x8000-0xBFFF and 0xC000-0xFFFF\n$prgOffset = if ($prg16k -eq 2) { 0xC72B - 0x8000 + 0x10 } else { 0xC72B - 0xC000 + 0x10 }\nWrite-Host \"PRG offset: 0x$('{0:X4}' -f $prgOffset)\"\n$bytes = $rom[$prgOffset..($prgOffset+30)]\n$bytes | ForEach-Object { '{0:X2}' -f $_ } | Write-Host -Separator ' '"
+		},
+		{
+			"label": "Disasm C72B",
+			"type": "shell",
+			"command": "$rom = [System.IO.File]::ReadAllBytes('C:\\Work\\nes1\\test\\Mappy (Japan).nes')\n# 1 PRG page = 16KB, mirrored at 0x8000 and 0xC000\n# C72B -> 0x72B bytes into the PRG, offset = 0x72B + 0x10 = 0x73B\n# Let's decode some bytes starting there\n$offset = 0x073B\n$bytes = $rom[$offset..($offset+40)]\n# Simple 6502 disassembly\n$i = 0\nwhile ($i -lt 30) {\n    $b = $bytes[$i]; $pc = 0xC72B + $i\n    $s = switch ($b) {\n        0xA9 { \"LDA #$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0xA5 { \"LDA \\$$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0x85 { \"STA \\$$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0x06 { \"ASL \\$$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0x26 { \"ROL \\$$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0x66 { \"ROR \\$$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0x2A { 'ROL A'; $i+=1; break }\n        0x29 { \"AND #$$('{0:X2}' -f $bytes[$i+1])\"; $i+=2; break }\n        0xAA { 'TAX'; $i+=1; break }\n        0x4C { \"JMP \\$$$('{0:X2}' -f $bytes[$i+2])$('{0:X2}' -f $bytes[$i+1])\"; $i+=3; break }\n        0xD0 { $rel=$bytes[$i+1]; if ($rel -gt 127) {$rel=$rel-256}; \"BNE \\$$$('{0:X4}' -f (0xC72B+$i+2+$rel))\"; $i+=2; break }\n        0xF0 { $rel=$bytes[$i+1]; if ($rel -gt 127) {$rel=$rel-256}; \"BEQ \\$$$('{0:X4}' -f (0xC72B+$i+2+$rel))\"; $i+=2; break }\n        0x90 { $rel=$bytes[$i+1]; if ($rel -gt 127) {$rel=$rel-256}; \"BCC \\$$$('{0:X4}' -f (0xC72B+$i+2+$rel))\"; $i+=2; break }\n        0xB0 { $rel=$bytes[$i+1]; if ($rel -gt 127) {$rel=$rel-256}; \"BCS \\$$$('{0:X4}' -f (0xC72B+$i+2+$rel))\"; $i+=2; break }\n        0x18 { 'CLC'; $i+=1; break }\n        0x38 { 'SEC'; $i+=1; break }\n        default { \"UNK $('{0:X2}' -f $b)\"; $i+=1; break }\n    }\n    Write-Host ('{0:X4}: {1}' -f $pc, $s)\n}"
+		},
+		{
+			"label": "Check cycle counts F244-247",
+			"type": "shell",
+			"command": "@(244, 245, 246, 247) | ForEach-Object { $f = $_; $nes1 = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$($f.ToString('0000')).txt\" | Select-String 'cycles=').Line; $fceux = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$($f.ToString('0000')).txt\" | Select-String 'cycles=').Line; Write-Host \"F${f}: NES1=$nes1\"; Write-Host \"F${f}: FCEUX=$fceux\"; Write-Host '' }"
+		},
+		{
+			"label": "Check PPU state F246-247",
+			"type": "shell",
+			"command": "@(246, 247) | ForEach-Object { $f = $_; $nes1 = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$($f.ToString('0000')).txt\" | Select-Object -First 25); $fceux = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$($f.ToString('0000')).txt\" | Select-Object -First 25); Write-Host \"=== NES1 F${f} ===\"; $nes1; Write-Host \"=== FCEUX F${f} ===\"; $fceux; Write-Host '' }"
+		},
+		{
+			"label": "CPU states F247-250",
+			"type": "shell",
+			"command": "@(247, 248, 249, 250) | ForEach-Object { $f = $_; $nes1 = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$($f.ToString('0000')).txt\" | Select-Object -First 2); $fceux = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$($f.ToString('0000')).txt\" | Select-Object -First 2); Write-Host \"F${f}: NES1=$nes1\"; Write-Host \"F${f}: FCEUX=$fceux\" }"
+		},
+		{
+			"label": "V register trace F246-255",
+			"type": "shell",
+			"command": "@(246, 247, 248, 249, 250, 251, 252, 253, 254, 255) | ForEach-Object { $f = $_; $n = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_$($f.ToString('0000')).txt\" | Select-String 'v=.*t=.*fine_x').Line.Trim(); $fc = (Get-Content \"C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_$($f.ToString('0000')).txt\" | Select-String 'v=.*t=.*fine_x').Line.Trim(); Write-Host \"F${f} NES1: $n\"; Write-Host \"F${f} FCEUX: $fc\" }"
+		},
+		{
+			"label": "Check failure pixel counts",
+			"type": "shell",
+			"command": "# Check F248 and F250 diff pixel counts from dense report\nSelect-String 'F0248|F0250|F0256|F0260' 'C:\\Work\\nes1\\test\\mappy_out\\dense_report.html' | Select-Object -First 20 | ForEach-Object { $_.Line.Trim() }"
+		},
+		{
+			"label": "Check dense report failures",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\dense_report.html' | Select-String 'F024[89]|F025[0-9]|F026[0-5]' | Select-Object -First 30 | ForEach-Object { $_.Line.Trim() }"
+		},
+		{
+			"label": "All FAIL entries",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\dense_report.html' | Select-String 'FAIL' | ForEach-Object { $_.Line.Trim() }"
+		},
+		{
+			"label": "Check F249 sprites",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0249.txt' | Select-String 'Active Sprites|Y=|v=' | Select-Object -First 15 | ForEach-Object { $_.Line.Trim() }"
+		},
+		{
+			"label": "Compare palettes F249",
+			"type": "shell",
+			"command": "$nes1 = (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out\\nes1_frame_0249.txt' | Select-String 'BG:|SPR:').Line\n$fceux = (Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_frame_0249.txt' | Select-String 'BG:|SPR:').Line\nWrite-Host \"NES1: $nes1\"\nWrite-Host \"FCEUX: $fceux\""
+		},
+		{
+			"label": "F249 scanline trace",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --scanlinetrace 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f249.txt' 249; Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f249.txt' | Select-Object -First 30"
+		},
+		{
+			"label": "Run frametest",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --frametest 'C:\\Work\\nes1\\test\\mappy_out\\nes1_dense_out' 270 1 2>&1 | Select-Object -Last 3"
+		},
+		{
+			"label": "Make dense report",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\test\\make_dense_report.ps1' 2>&1 | Select-Object -Last 5"
+		},
+		{
+			"label": "Make dense report",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\make_dense_report.ps1' 2>&1 | Select-Object -Last 5"
+		},
+		{
+			"label": "F4 scanline trace",
+			"type": "shell",
+			"command": "& 'C:\\Work\\nes1\\src\\x64\\Debug\\nes1.exe' 'C:\\Work\\nes1\\test\\Mappy (Japan).nes' --scanlinetrace 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f4.txt' 4; Get-Content 'C:\\Work\\nes1\\test\\mappy_out\\nes1_sl_trace_f4.txt' | Select-Object -First 10"
+		},
+		{
+			"label": "Make dense report",
+			"type": "shell",
+			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\make_dense_report.ps1'"
+		}
+	]
+}

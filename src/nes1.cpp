@@ -358,8 +358,16 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	run_ppu(12);
 
 	// ── Step 4: fire NMI if PPUCTRL bit 7 is set ─────────────────────────
-	if (ppu.nmi_enabled())
+	if (ppu.nmi_enabled()) {
 		cpu.nmi();
+		// Deduct the NMI's 7-cycle overhead from the cycle budget so that the
+		// rest-of-vblank run_ppu(6808) has the correct effective CPU budget.
+		// On real NES / FCEUX, the NMI fires WITHIN X6502_Run and its 7 cycles
+		// consume part of the vblank budget.  In NES1, cpu.nmi() charges those
+		// 7 cycles directly to cpu.cycle outside of run_ppu, so we must subtract
+		// them from cycle_counter here to keep the timing aligned.
+		cycle_counter -= 7;
+	}
 
 	// ── Step 5: snap pre-NMI scroll (for debug export only) ──────────────
 	ppu.snap_nmi_scroll();
@@ -500,7 +508,12 @@ static void run_frametest(const char* outdir, int nframes, int interval)
 		run_one_frame(/*suppress_vbl=*/dead);
 		if (f % interval == 0)
 		{
+			// For ppudead frames framebuf is set but render_scanline was never called,
+			// so screen_buf is stale.  Temporarily clear framebuf so the batch render()
+			// fills screen_buf with the backdrop color, matching FCEUX's grey output.
+			if (dead) ppu.framebuf = nullptr;
 			ppu.render(screen_buf);
+			if (dead) ppu.framebuf = screen_buf;
 			char path[512];
 			sprintf_s(path, sizeof(path),
 			          "%s\\nes1_frame_%04d.txt", outdir, f);
@@ -651,6 +664,7 @@ int main(int argc, char* argv[])
 
 	ppu.load_chr_rom(chr_rom, 8192);
 	ppu.set_mirroring((header[6] & 0x01) != 0);
+	ppu.set_cpu(&cpu);
 	cpu.set_ppu(&ppu);
 	cpu.set_apu(&apu);
 

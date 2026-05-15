@@ -19,6 +19,9 @@ src/Release/
 # VS internal
 .vs/
 
+# Test output
+test/mappy/mappy_out/
+
 # Debug/dump output files
 src/frame_dump.bmp
 src/frame_dump.txt

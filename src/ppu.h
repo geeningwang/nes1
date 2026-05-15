@@ -11,9 +11,30 @@ struct ScanlineScroll {
 	unsigned char scroll_nt;
 };
 
-// Per-scanline CPU+PPU state captured at the END of each visible scanline
-// (after that scanline's CPU run, before end_scanline() updates scroll).
+// A single $2007 (PPUDATA) write captured during a visible scanline's CPU window.
+// Stored in nt_write_log[] so render_scanline() can replay writes at per-tile
+// granularity instead of using a whole-frame VRAM snapshot.
+struct NtWrite {
+	int            dot;     // approximate PPU dot within scanline (col*8 units)
+	unsigned short addr;    // mirrored NT address ($2000-$27FF)
+	unsigned char  val;
+	unsigned short cpu_pc;  // CPU PC at time of write (for trace/debug)
+};
+
+// Per-scanline CPU+PPU state.  Two sub-snapshots per entry:
+//   START fields: captured in begin_scanline() BEFORE the scanline's CPU run.
+//   END   fields: captured in capture_scanline_trace() AFTER the CPU run.
 struct ScanlineTraceEntry {
+	// --- START-OF-SCANLINE snapshot (begin_scanline, before CPU run) ---
+	unsigned short v_start;    // V register before this scanline's CPU window
+	unsigned char  ppuctrl;    // PPUCTRL ($2000) at start of scanline
+	unsigned char  ppumask;    // PPUMASK ($2001) at start of scanline
+	// Actual render scroll values nes1 will use for this scanline
+	unsigned char  ss_x;       // scanline_scroll[sl].scroll_x
+	short          ss_y;       // scanline_scroll[sl].scroll_y  (abs_y 0-479)
+	unsigned char  ss_nt;      // scanline_scroll[sl].scroll_nt
+
+	// --- END-OF-SCANLINE snapshot (capture_scanline_trace, after CPU run) ---
 	// CPU state
 	unsigned short cpu_pc;
 	unsigned char  cpu_a, cpu_x, cpu_y, cpu_s, cpu_p;
@@ -30,8 +51,12 @@ struct ScanlineTraceEntry {
 	unsigned char  scroll_y_reg;
 	unsigned char  scroll_nt;
 
-	// Live palette entry $3F00 (universal BG color)
-	unsigned char  pal_3f00;
+// Full palette snapshot (32 bytes: $3F00-$3F1F)
+    unsigned char  palette[32];
+
+	// --- NT writes that occurred during this scanline's CPU window ---
+	int            nt_write_cnt;    // number of writes logged (capped at 64)
+	NtWrite        nt_writes[64];   // copy of nt_write_log[] at end of scanline
 };
 
 class cpu_6502;
@@ -95,6 +120,10 @@ public:
 	// When non-null, render_scanline() writes directly here and render() is a no-op.
 	// Set from outside before each frame; null = use batch render().
 	unsigned char* framebuf;
+
+	// Backref to the CPU — set once via set_cpu(); used inside cpu_write($2007)
+	// to compute the current PPU dot for per-tile VRAM write tracking.
+	void set_cpu(cpu_6502* c) { cpu_ptr = c; }
 
 private:
 	unsigned short mirror_nt_addr(unsigned short addr);
@@ -185,4 +214,19 @@ private:
 
 	// Per-scanline trace buffer (filled by capture_scanline_trace, written by export_scanline_trace)
 	ScanlineTraceEntry scanline_trace[240];
+
+	// ── Per-dot VRAM write tracking ───────────────────────────────────────
+	// begin_scanline() snapshots the 2 KB NT before the CPU runs.
+	// cpu_write($2007) appends entries to nt_write_log[] when inside a visible
+	// scanline. render_scanline() replays them at tile boundaries so the
+	// rendered output matches FCEUX's per-dot rendering.
+	unsigned char nt_snapshot[0x800];          // NT state before this scanline's CPU run
+	static const int kMaxNtWrites = 64;        // max logged writes per scanline
+	NtWrite        nt_write_log[kMaxNtWrites]; // writes during cur_scanline's CPU window
+	int            nt_write_count;             // entries used in nt_write_log[]
+
+	int          cur_scanline;        // visible scanline being executed; -1 if outside window
+	unsigned int sl_cpu_cycle_base;   // cpu_ptr->cycle at the start of this scanline's CPU run
+
+	cpu_6502*    cpu_ptr;             // set by set_cpu(); nullptr until then
 };

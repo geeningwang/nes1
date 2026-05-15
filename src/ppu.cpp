@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "ppu.h"
 #include "cpu.h"
 #include <stdio.h>
@@ -193,6 +193,11 @@ ppu_2c02::ppu_2c02()
 	pre_render_scroll_nt_y = 0;
 	memset(scanline_pal, 0, sizeof(scanline_pal));
 	framebuf = nullptr;
+	cpu_ptr           = nullptr;
+	cur_scanline      = -1;
+	nt_write_count    = 0;
+	sl_cpu_cycle_base = 0;
+	memset(nt_snapshot, 0, sizeof(nt_snapshot));
 }
 
 ppu_2c02::~ppu_2c02()
@@ -578,7 +583,26 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 		int pix_row    = local_y % 8;
 		int nt_y_base  = (((nt_sel >> 1) & 1) + extra_nt_y) & 1;
 
+		// Start from the pre-CPU NT snapshot and apply logged $2007 writes at each
+		// tile boundary.  This matches FCEUX's per-dot rendering: a write at PPU dot D
+		// affects tiles whose fetch dot > D but not tiles already fetched.
+		// Writes are logged in CPU-execution order so nt_write_log[] is sorted by dot.
+		// When no writes occurred (the common case) work_nt == nt_snapshot == live mem[].
+		unsigned char work_nt[0x800];
+		memcpy(work_nt, nt_snapshot, 0x800);
+		int wlog_idx = 0;
+
 		for (int col = 0; col <= 32; ++col) {
+			// Apply any logged NT writes whose dot falls before this tile's fetch.
+			// Tile col fetches at approximately dot col*8 (before fine_x adjustment).
+			int tile_dot = col * 8;
+			while (wlog_idx < nt_write_count && nt_write_log[wlog_idx].dot <= tile_dot) {
+				unsigned short wa = nt_write_log[wlog_idx].addr;
+				if (wa >= 0x2000 && wa <= 0x27FF)
+					work_nt[wa - 0x2000] = nt_write_log[wlog_idx].val;
+				++wlog_idx;
+			}
+
 			int abs_col = coarse_x + col;
 			int nt_h    = ((nt_sel & 0x01) + (abs_col / 32)) & 0x01;
 			int nt_v    = nt_y_base;
@@ -587,11 +611,11 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 
 			unsigned short nt_base = (unsigned short)(0x2000 + cur_nt * 0x400);
 
-			// Read tile name and attribute from LIVE nametable memory.
-			unsigned char name = mem[mirror_nt_addr((unsigned short)(nt_base + tile_row * 32 + loc_col))];
+			// Read tile name and attribute from the per-dot working NT copy.
+			unsigned char name = work_nt[mirror_nt_addr((unsigned short)(nt_base + tile_row * 32 + loc_col)) - 0x2000];
 
 			unsigned short at_base = (unsigned short)(nt_base + 0x3C0);
-			unsigned char  att     = mem[mirror_nt_addr((unsigned short)(at_base + (tile_row / 4) * 8 + (loc_col / 4)))];
+			unsigned char  att     = work_nt[mirror_nt_addr((unsigned short)(at_base + (tile_row / 4) * 8 + (loc_col / 4))) - 0x2000];
 			int square             = (tile_row & 0x02) + ((loc_col >> 1) & 0x01);
 			unsigned char color_bit23 = ((att >> (square * 2)) & 0x03) << 2;
 
@@ -767,9 +791,22 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		}
 		break;
 	case 0x2007:  // PPUDATA
+	{
+		unsigned short write_v = v;
 		ppu_mem_write(v, val);
 		v += (reg_ctrl & 0x04) ? 32 : 1;
+		// Log NT writes that happen during a visible scanline's CPU window so
+		// render_scanline() can apply them at the correct tile boundary.
+		if (cur_scanline >= 0 && nt_write_count < kMaxNtWrites && cpu_ptr) {
+			unsigned short nt_addr = write_v & 0x3FFF;
+			if (nt_addr >= 0x2000 && nt_addr <= 0x3EFF) {
+				int dot = (int)((cpu_ptr->cycle - sl_cpu_cycle_base) * 3);
+				NtWrite nw = { dot, mirror_nt_addr(nt_addr), val, cpu_ptr->get_pc() };
+				nt_write_log[nt_write_count++] = nw;
+			}
+		}
 		break;
+	}
 	}
 }
 
@@ -919,6 +956,24 @@ void ppu_2c02::begin_scanline(int sl)
 		scanline_pal[sl][i] = ppu_mem_read(0x3F00 + i);
 	scanline_scroll[sl].scroll_x = scroll_x_reg;
 	scanline_scroll[sl].fine_x   = fine_x;
+	// Snapshot the 2 KB nametable BEFORE the CPU runs this scanline.
+	// cpu_write($2007) will append entries to nt_write_log[] as the CPU writes
+	// VRAM; render_scanline() replays them at per-tile boundaries.
+	memcpy(nt_snapshot, mem + 0x2000, 0x800);
+	nt_write_count    = 0;
+	cur_scanline      = sl;
+	sl_cpu_cycle_base = cpu_ptr ? cpu_ptr->cycle : 0;
+
+	// Pre-populate start-of-scanline trace fields BEFORE the CPU runs.
+	// capture_scanline_trace() fills the end-of-scanline fields afterwards.
+	scanline_trace[sl].v_start = v;
+	scanline_trace[sl].ppuctrl = reg_ctrl;
+	scanline_trace[sl].ppumask = reg_mask;
+	// ss_* reflect the render scroll that was locked in by begin_scanline
+	// (scroll_x / fine_x were just written above; scroll_y was seeded earlier)
+	scanline_trace[sl].ss_x  = scanline_scroll[sl].scroll_x;
+	scanline_trace[sl].ss_y  = scanline_scroll[sl].scroll_y;
+	scanline_trace[sl].ss_nt = scanline_scroll[sl].scroll_nt;
 }
 
 void ppu_2c02::end_scanline(int sl)
@@ -927,6 +982,7 @@ void ppu_2c02::end_scanline(int sl)
 	// Scroll and palette are now captured in begin_scanline (before cpu).
 	// Only clear the mid-render V-reset flag here.
 	mid_render_v_reset = false;
+	cur_scanline = -1;  // no longer inside a visible CPU window
 }
 
 void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename, cpu_6502* cpu)
@@ -987,7 +1043,11 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename, cp
 	fprintf(f, "BG:  ");
 	for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", ppu_mem_read(0x3F00 + i));
 	fprintf(f, "\nSPR: ");
-	for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", ppu_mem_read(0x3F10 + i));
+	// Read SPR palette as raw physical PPU RAM (no $3F10/$3F14/$3F18/$3F1C → $3F00 mirror).
+	// Writes to $3F10/$3F14/$3F18/$3F1C are redirected to $3F00/$3F04/$3F08/$3F0C, so the
+	// physical locations at $3F10 etc. retain their reset value of $00 — matching how
+	// FCEUX's Lua script reads them (raw PPU RAM without the hardware mirror applied).
+	for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", mem[0x3F10 + i]);
 	fprintf(f, "\n");
 
 	// --- Active sprites (OAM) ---
@@ -1033,6 +1093,18 @@ void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename, cp
 	else
 	{
 		fprintf(f, "(no pixel buffer - render first)\n");
+	}
+
+	// --- CPU RAM ($0000-$07FF) ---
+	if (cpu)
+	{
+		fprintf(f, "\n=== CPU RAM ($0000-$07FF) ===\n");
+		for (int row = 0; row < 64; ++row)
+		{
+			for (int col = 0; col < 32; ++col)
+				fprintf(f, "%02X ", cpu->get_mem_byte((unsigned short)(row * 32 + col)));
+			fprintf(f, "\n");
+		}
 	}
 
 	fclose(f);
@@ -1116,8 +1188,16 @@ void ppu_2c02::capture_scanline_trace(int sl, cpu_6502* cpu)
 	e.scroll_y_reg = scroll_y_reg;
 	e.scroll_nt    = scroll_nt;
 
-	// Universal BG color (mirrors resolved)
-	e.pal_3f00 = ppu_mem_read(0x3F00);
+// Full palette snapshot (32 bytes, mirrors resolved)
+  for (int i = 0; i < 32; ++i) e.palette[i] = ppu_mem_read(0x3F00 + i);
+
+	// Copy the NT write log accumulated during this scanline's CPU window.
+	// begin_scanline() reset nt_write_count and nt_write_log; cpu_write($2007)
+	// appended to it; we snapshot it here before the next begin_scanline clears it.
+	e.nt_write_cnt = nt_write_count;
+	int ncopy = nt_write_count < 64 ? nt_write_count : 64;
+	for (int i = 0; i < ncopy; ++i)
+		e.nt_writes[i] = nt_write_log[i];
 }
 
 void ppu_2c02::export_scanline_trace(const char* filename)
@@ -1126,26 +1206,70 @@ void ppu_2c02::export_scanline_trace(const char* filename)
 	fopen_s(&f, filename, "w");
 	if (!f) return;
 
-	fprintf(f, "%-4s  %-8s %-32s  %-20s  %-12s  P3F00\n",
-		"SL", "CPU_CYC", "CPU_REGS", "LOOPY(V,T,fx,w)", "SCROLL(x,y,nt)");
-	fprintf(f, "%-4s  %-8s %-32s  %-20s  %-12s  -----\n",
-		"----", "--------", "--------------------------------",
-		"--------------------", "------------");
+	// ----------------------------------------------------------------
+	// PART 1 – Per-scanline summary (one row per visible scanline)
+	// Columns:
+	//   SL        – scanline index 0-239
+	//   V_S       – V register at START of scanline (before CPU run)
+	//   V_E       – V register at END of scanline (after CPU run)
+	//   T_E       – T (temp) register at end
+	//   FX W      – fine_x, w latch at end
+	//   CTL MSK   – PPUCTRL, PPUMASK at start of scanline
+	//   SSX SS_Y  – scanline_scroll[sl].scroll_x, .scroll_y (render values)
+	//   SSNT      – scanline_scroll[sl].scroll_nt
+	//   NTw       – number of NT writes during this scanline's CPU window
+	//   CYC       – cumulative CPU cycle counter at end of scanline
+	//   PC A X Y S P  – CPU registers at end of scanline
+	//   PAL       – live palette $3F00 at end of scanline
+	// ----------------------------------------------------------------
+	fprintf(f, "=== PART1 ===\n");
+	fprintf(f, "# %-3s  %-5s %-5s %-5s %2s %1s  %2s  %2s  %3s %6s %4s  %3s  %-8s  %-4s %-2s %-2s %-2s %-2s %-2s  PAL\n",
+		"SL", "V_S", "V_E", "T_E", "FX", "W", "CTL", "MSK",
+		"SSX", "SS_Y", "SSNT", "NTw", "CYC", "PC", "A", "X", "Y", "S", "P");
 
 	for (int sl = 0; sl < 240; ++sl) {
 		const ScanlineTraceEntry& e = scanline_trace[sl];
-		char cpu_regs[64];
-		sprintf_s(cpu_regs, sizeof(cpu_regs),
-			"PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X",
-			e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p);
-		char loopy[48];
-		sprintf_s(loopy, sizeof(loopy), "V=%04X T=%04X fx=%d w=%d",
-			e.ppu_v, e.ppu_t, e.ppu_fine_x, e.ppu_w);
-		char scroll[32];
-		sprintf_s(scroll, sizeof(scroll), "x=%3d y=%3d nt=%d",
-			e.scroll_x_reg, e.scroll_y_reg, e.scroll_nt);
-		fprintf(f, "%3d   %8u  %-32s  %-20s  %-18s  %02X\n",
-			sl, e.cpu_cycles, cpu_regs, loopy, scroll, e.pal_3f00);
+		char pal64[65] = {};
+		for (int i = 0; i < 32; ++i) snprintf(pal64 + i*2, 3, "%02X", e.palette[i]);
+		fprintf(f, "  %3d  %04X  %04X  %04X  %d  %d  %02X  %02X  %3d %6d    %d  %3d  %8u  %04X %02X %02X %02X %02X %02X  %s\n",
+			sl,
+			e.v_start, e.ppu_v, e.ppu_t,
+			e.ppu_fine_x, e.ppu_w,
+			e.ppuctrl, e.ppumask,
+			(int)e.ss_x, (int)e.ss_y, (int)e.ss_nt,
+			e.nt_write_cnt,
+			e.cpu_cycles,
+			e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p,
+			pal64);
+	}
+
+	// ----------------------------------------------------------------
+	// PART 2 – Per-write log (every NT/$2007 write logged per scanline)
+	// Columns:
+	//   SEQ    – sequential write number (1-based, global across all scanlines)
+	//   SL     – scanline the write occurred on
+	//   DOT    – approximate PPU dot within scanline
+	//   V_BEF  – V register before the write (= the PPU address written to)
+	//   V_AFT  – V register after the write (= V_BEF + increment)
+	//   NTADDR – mirrored NT/AT address written ($2000-$27FF)
+	//   VAL    – byte value written
+	//   PC     – CPU PC at time of write
+	// ----------------------------------------------------------------
+	fprintf(f, "\n=== PART2 ===\n");
+	fprintf(f, "# %-5s %-3s %-5s %-5s %-5s %-5s %-3s  PC\n",
+		"SEQ", "SL", "DOT", "V_BEF", "V_AFT", "NTADDR", "VAL");
+
+	int seq = 0;
+	for (int sl = 0; sl < 240; ++sl) {
+		const ScanlineTraceEntry& e = scanline_trace[sl];
+		for (int i = 0; i < e.nt_write_cnt && i < 64; ++i) {
+			const NtWrite& w = e.nt_writes[i];
+			// V_BEF is implicit: it's w.addr (the address written, which equals V at write time)
+			// V_AFT = V_BEF + (ctrl & 4 ? 32 : 1) — but we don't re-track increment here.
+			// Use 0 as V_AFT placeholder; exact V_AFT is in PART1 e.ppu_v (end of scanline).
+			fprintf(f, "  %5d  %3d  %4d  %04X  ----  %04X  %02X  %04X\n",
+				++seq, sl, w.dot, w.addr, w.addr, w.val, w.cpu_pc);
+		}
 	}
 
 	fclose(f);
