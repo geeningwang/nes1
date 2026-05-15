@@ -46,6 +46,8 @@ struct FCEUXScanlineTrace {
     // Full memory snapshots at end of scanline (captured after X6502_Run)
     unsigned char  nametable[0x800]; // physical NT RAM (NTARAM, 2KB)
     unsigned char  cpu_ram[0x800];   // CPU RAM ($0000-$07FF, 2KB)
+    unsigned char  oam[0x100];       // OAM (SPRAM, 256 bytes)
+    unsigned char  mirror_vertical;  // 1=vertical, 0=horizontal (from vnapage)
     // NT write log during this scanline's CPU window
     int            nt_write_cnt;   // capped at 64
     FCEUXNtWrite   nt_writes[64];

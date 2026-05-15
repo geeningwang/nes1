@@ -86,6 +86,8 @@ void FCEUX_CaptureScanlineTrace(int sl)
     memcpy(e.nametable, NTARAM, 0x800);
     if (RAM) memcpy(e.cpu_ram, RAM, 0x800);
     else     memset(e.cpu_ram, 0, 0x800);
+    memcpy(e.oam, SPRAM, 0x100);
+    e.mirror_vertical = (vnapage[0] == vnapage[2] && vnapage[1] == vnapage[3]) ? 1 : 0;
 
     // Decode render scroll from end-of-scanline V register
     {
@@ -121,40 +123,33 @@ void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc)
     w.cpu_pc = pc;
 }
 
-// Export one txt file per visible scanline for the given frame.
-// Output: <outdir>\fceux_frame_XXXX_sl_YYY.txt  (240 files total)
-// Each file contains the full CPU/PPU/NT/RAM state captured at the end of that scanline.
+// Export one txt+bmp file per visible scanline for the given frame.
+// Output: <outdir>\fceux_frame_XXXX_sl_YYY.txt + .bmp  (240 pairs)
+// Each file has the exact same sections as the frame-level output,
+// using end-of-scanline captured state, plus "NT Writes During Scanline" at end.
+// The BMP shows the full rendered frame with scanline sl highlighted in red.
 void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
 {
+    const char* shades = " .:-=+*#%%@";
+    const int nshades = 10;
+
     for (int sl = 0; sl < 240; ++sl) {
+        const FCEUXScanlineTrace& e = g_sl_trace[sl];
+
+        // ---- Text file ----
         char path[512];
         snprintf(path, sizeof(path), "%s\\fceux_frame_%04d_sl_%03d.txt", outdir, framenum, sl);
         FILE* f = fopen(path, "w");
         if (!f) continue;
 
-        const FCEUXScanlineTrace& e = g_sl_trace[sl];
+        // --- CPU State ---
+        fprintf(f, "=== CPU State ===\n");
+        fprintf(f, "PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X cycles=%u\n\n",
+            e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p, e.cpu_cycles);
 
-        fprintf(f, "=== Scanline %d (Frame %d) ===\n", sl, framenum);
-
-        // --- PPU Registers at start of scanline (what the PPU saw during rendering) ---
-        fprintf(f, "\n=== PPU Registers (start of scanline) ===\n");
-        fprintf(f, "PPUCTRL  ($2000): %02X  (NMI:%d BGtable:%04X SPRtable:%04X inc:%d)\n",
-            e.ppuctrl_start,
-            (e.ppuctrl_start >> 7) & 1,
-            (e.ppuctrl_start & 0x10) ? 0x1000 : 0x0000,
-            (e.ppuctrl_start & 0x08) ? 0x1000 : 0x0000,
-            (e.ppuctrl_start & 0x04) ? 32 : 1);
-        fprintf(f, "PPUMASK  ($2001): %02X  (BG:%d SPR:%d)\n",
-            e.ppumask_start, (e.ppumask_start >> 3) & 1, (e.ppumask_start >> 4) & 1);
-        {
-            uint32 vs = e.ppu_v_start;
-            int cx = vs & 0x1F, cy = (vs >> 5) & 0x1F, fy = (vs >> 12) & 0x7, nt = (vs >> 10) & 0x3;
-            fprintf(f, "v=%04X  (scroll: x=%d y=%d nt=%d)\n",
-                vs & 0x7FFF, cx * 8 + (int)e.ppu_fine_x, cy * 8 + fy, nt);
-        }
-
-        // --- PPU Registers at end of scanline ---
-        fprintf(f, "\n=== PPU Registers (end of scanline) ===\n");
+        // --- PPU Registers ---
+        const char* mirror_str = e.mirror_vertical ? "vertical" : "horizontal";
+        fprintf(f, "=== PPU Registers ===\n");
         fprintf(f, "PPUCTRL  ($2000): %02X  (NMI:%d BGtable:%04X SPRtable:%04X inc:%d)\n",
             e.ppuctrl,
             (e.ppuctrl >> 7) & 1,
@@ -165,21 +160,23 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
             e.ppumask, (e.ppumask >> 3) & 1, (e.ppumask >> 4) & 1);
         fprintf(f, "PPUSTATUS($2002): %02X  (VBL:%d)\n",
             e.ppustatus, (e.ppustatus >> 7) & 1);
-        fprintf(f, "OAMADDR  ($2003): %02X\n", e.oamaddr);
-        fprintf(f, "v=%04X  t=%04X  fine_x=%d  w=%d\n",
-            e.ppu_v & 0x7FFF, e.ppu_t & 0x7FFF, (int)e.ppu_fine_x, (int)e.ppu_w);
+        fprintf(f, "v=%04X  t=%04X  fine_x=%d  mirroring=%s\n",
+            e.ppu_v & 0x7FFF, e.ppu_t & 0x7FFF, (int)e.ppu_fine_x, mirror_str);
         {
             uint32 ve = e.ppu_v;
             int cx = ve & 0x1F, cy = (ve >> 5) & 0x1F, fy = (ve >> 12) & 0x7, nt = (ve >> 10) & 0x3;
             int sx = cx * 8 + (int)e.ppu_fine_x, sy = cy * 8 + fy;
-            fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n",
+            fprintf(f, "render_scroll_x=%d (coarse=%d fine=%d)  render_scroll_y=%d (coarse=%d fine=%d)  render_scroll_nt=%d\n\n",
                 sx, cx, (int)e.ppu_fine_x, sy, cy, fy, nt);
         }
 
-        // --- CPU State at end of scanline ---
-        fprintf(f, "\n=== CPU State (end of scanline) ===\n");
-        fprintf(f, "PC=%04X A=%02X X=%02X Y=%02X S=%02X P=%02X cycles=%u\n",
-            e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p, e.cpu_cycles);
+        // --- Nametable ($2000-$23BF, 32x30 tile IDs) ---
+        fprintf(f, "=== Nametable ($2000-$23BF, 32x30 tile IDs) ===\n");
+        for (int row = 0; row < 30; ++row) {
+            for (int col = 0; col < 32; ++col)
+                fprintf(f, "%02X ", e.nametable[row * 32 + col]);
+            fprintf(f, "\n");
+        }
 
         // --- Palette ---
         fprintf(f, "\n=== Palette ($3F00-$3F1F) ===\n");
@@ -189,32 +186,37 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
         for (int i = 0; i < 16; ++i) fprintf(f, "%02X ", e.palette[0x10 + i]);
         fprintf(f, "\n");
 
-        // --- Nametable NT0 ($2000-$23FF): 30 rows tile IDs + attribute table ---
-        fprintf(f, "\n=== Nametable NT0 ($2000-$23FF) ===\n");
-        for (int row = 0; row < 30; ++row) {
-            for (int col = 0; col < 32; ++col)
-                fprintf(f, "%02X ", e.nametable[row * 32 + col]);
-            fprintf(f, "\n");
-        }
-        fprintf(f, "AT:\n");
-        for (int row = 0; row < 8; ++row) {
-            for (int col = 0; col < 8; ++col)
-                fprintf(f, "%02X ", e.nametable[0x3C0 + row * 8 + col]);
-            fprintf(f, "\n");
+        // --- Active Sprites (OAM) ---
+        fprintf(f, "\n=== Active Sprites (OAM) ===\n");
+        fprintf(f, "  # |  Y   X  Tile Attr\n");
+        for (int i = 0; i < 64; ++i) {
+            unsigned char sy = e.oam[i * 4 + 0];
+            unsigned char st = e.oam[i * 4 + 1];
+            unsigned char sa = e.oam[i * 4 + 2];
+            unsigned char sx = e.oam[i * 4 + 3];
+            if (sy < 0xEF)
+                fprintf(f, " %2d | %3d %3d   %02X   %02X\n", i, (int)sy + 1, (int)sx, st, sa);
         }
 
-        // --- Nametable NT1 ($2400-$27FF) ---
-        fprintf(f, "\n=== Nametable NT1 ($2400-$27FF) ===\n");
-        for (int row = 0; row < 30; ++row) {
-            for (int col = 0; col < 32; ++col)
-                fprintf(f, "%02X ", e.nametable[0x400 + row * 32 + col]);
-            fprintf(f, "\n");
-        }
-        fprintf(f, "AT:\n");
-        for (int row = 0; row < 8; ++row) {
-            for (int col = 0; col < 8; ++col)
-                fprintf(f, "%02X ", e.nametable[0x400 + 0x3C0 + row * 8 + col]);
-            fprintf(f, "\n");
+        // --- ASCII Screen (32x30 tiles) ---
+        fprintf(f, "\n=== ASCII Screen (32x30 tiles) ===\n");
+        if (XBuf && palo) {
+            for (int ty = 0; ty < 30; ++ty) {
+                for (int tx = 0; tx < 32; ++tx) {
+                    int sum = 0;
+                    for (int py = 0; py < 8; ++py)
+                        for (int px = 0; px < 8; ++px) {
+                            uint8 idx = XBuf[(ty * 8 + py) * 256 + (tx * 8 + px)] & 0x3F;
+                            sum += palo[idx].r + palo[idx].g + palo[idx].b;
+                        }
+                    int brightness = sum / (64 * 3);
+                    int si = brightness * (nshades - 1) / 255;
+                    fprintf(f, "%c", shades[si]);
+                }
+                fprintf(f, "\n");
+            }
+        } else {
+            fprintf(f, "(no pixel buffer)\n");
         }
 
         // --- CPU RAM ($0000-$07FF) ---
@@ -239,6 +241,49 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
         }
 
         fclose(f);
+
+        // ---- BMP file: full frame with scanline sl highlighted in red ----
+        if (!XBuf || !palo) continue;
+
+        char bmppath[512];
+        snprintf(bmppath, sizeof(bmppath), "%s\\fceux_frame_%04d_sl_%03d.bmp", outdir, framenum, sl);
+        FILE* bf = fopen(bmppath, "wb");
+        if (!bf) continue;
+
+        const int W = 256, H = 240;
+        unsigned int pix_size  = (unsigned int)(W * H * 4);
+        unsigned int file_size = 14 + 40 + pix_size;
+        unsigned char bfh[14] = {
+            'B','M',
+            (unsigned char)(file_size      ), (unsigned char)(file_size >>  8),
+            (unsigned char)(file_size >> 16), (unsigned char)(file_size >> 24),
+            0,0,0,0, 54,0,0,0
+        };
+        fwrite(bfh, 1, 14, bf);
+
+        int bih_h = -H;
+        unsigned short planes = 1, bits = 32;
+        unsigned int comp = 0, img_sz = 0, clr = 0, hdr = 40;
+        int ppm = 2835;
+        unsigned char dib[40];
+        memcpy(dib +  0, &hdr,    4); memcpy(dib +  4, &W,      4);
+        memcpy(dib +  8, &bih_h,  4); memcpy(dib + 12, &planes, 2);
+        memcpy(dib + 14, &bits,   2); memcpy(dib + 16, &comp,   4);
+        memcpy(dib + 20, &img_sz, 4); memcpy(dib + 24, &ppm,    4);
+        memcpy(dib + 28, &ppm,    4); memcpy(dib + 32, &clr,    4);
+        memcpy(dib + 36, &clr,    4);
+        fwrite(dib, 1, 40, bf);
+
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                uint8 idx = XBuf[y * 256 + x] & 0x3F;
+                uint8 r = palo[idx].r, g = palo[idx].g, b = palo[idx].b;
+                if (y == sl) { r = (uint8)((r + 255) / 2); g /= 2; b /= 2; }
+                unsigned char px[4] = { b, g, r, 0xFF };
+                fwrite(px, 1, 4, bf);
+            }
+        }
+        fclose(bf);
     }
 }
 
