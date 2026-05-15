@@ -528,9 +528,12 @@ static void run_frametest(const char* outdir, int nframes, int interval)
 	printf("Frametest done: %d screenshots saved to %s\\\n", saved, outdir);
 }
 
-// Run to frame 'target_frame' from reset and dump a per-scanline CPU+PPU trace
-// for that frame to <outpath>.  Uses capture_scanline_trace() / export_scanline_trace().
-static void run_scanlinetrace(const char* outpath, int target_frame)
+// Run to frame 'target_frame' from reset and dump 240 per-scanline txt+bmp files
+// for that frame into <outdir>.  Each file matches the 7-section format of
+// export_frame plus an "NT Writes During Scanline" section.
+// Each bmp is the full rendered frame with that scanline's row tinted red.
+// Uses capture_scanline_trace() / export_scanline_level().
+static void run_scanlinetrace(const char* outdir, int target_frame)
 {
 	// A modified run_one_frame that captures per-scanline state.
 	// We inline the frame loop here and intercept the visible-scanline step.
@@ -549,7 +552,11 @@ static void run_scanlinetrace(const char* outpath, int target_frame)
 		}
 	};
 
-	printf("Running %d frames for scanline trace...\n", target_frame);
+	printf("Running %d frames for scanline dump...\n", target_frame);
+
+	// Off-screen render buffer for the target frame (BGRA, 256x240)
+	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
 
 	for (int f = 1; f <= target_frame; f++)
 	{
@@ -579,14 +586,18 @@ static void run_scanlinetrace(const char* outpath, int target_frame)
 			ppu.begin_scanline(sl);
 			ppu.check_sprite0_hit(sl);
 			run_ppu_tr(341);
-			if (is_target)
+			if (is_target) {
 				ppu.capture_scanline_trace(sl, &cpu);
+				ppu.render_scanline(sl, screen_buf);
+			}
 			ppu.end_scanline(sl);
 		}
 	}
 
-	ppu.export_scanline_trace(outpath);
-	printf("Scanline trace written to %s\n", outpath);
+	ppu.export_scanline_level(target_frame, outdir, screen_buf);
+	printf("Scanline dump written to %s\\ (240 txt + 240 bmp)\n", outdir);
+
+	delete[] screen_buf;
 }
 
 int main(int argc, char* argv[])
@@ -685,8 +696,8 @@ int main(int argc, char* argv[])
 	}
 	if (argc >= 4 && strcmp(argv[2], "--scanlinetrace") == 0)
 	{
-		// Dumps per-scanline CPU+PPU state for frame N to <outpath>
-		// Usage: nes1 <rom> --scanlinetrace <outpath> <frame_number>
+		// Dumps 240 per-scanline txt+bmp files for frame N into <outdir>.
+		// Usage: nes1 <rom> --scanlinetrace <outdir> <frame_number>
 		int target_frame = (argc >= 5) ? atoi(argv[4]) : 4;
 		run_scanlinetrace(argv[3], target_frame);
 		return 0;

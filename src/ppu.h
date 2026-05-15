@@ -57,6 +57,15 @@ struct ScanlineTraceEntry {
 	// --- NT writes that occurred during this scanline's CPU window ---
 	int            nt_write_cnt;    // number of writes logged (capped at 64)
 	NtWrite        nt_writes[64];   // copy of nt_write_log[] at end of scanline
+
+	// Full memory snapshots at end of scanline
+	unsigned char  nametable[0x800]; // physical NT RAM ($2000-$27FF, 2KB)
+	unsigned char  cpu_ram[0x800];   // CPU RAM ($0000-$07FF, 2KB)
+	unsigned char  oam_snap[0x100];  // OAM (256 bytes)
+	unsigned char  mirror_v;         // 1=vertical, 0=horizontal
+	// Additional PPU registers at end of scanline
+	unsigned char  ppustatus;        // $2002
+	unsigned char  oamaddr;          // $2003
 };
 
 class cpu_6502;
@@ -112,9 +121,11 @@ public:
 
 	// Per-scanline trace capture (called from nes1.cpp during a traced frame).
 	// call capture_scanline_trace(sl, cpu) after each visible scanline's CPU run.
-	// Then call export_scanline_trace(path) to write the trace file.
+	// Then call export_scanline_level(framenum, outdir, screenbuf) to write
+	// 240 per-scanline txt+bmp files (one pair per visible scanline).
 	void capture_scanline_trace(int sl, cpu_6502* cpu);
-	void export_scanline_trace(const char* filename);
+	void export_scanline_trace(const char* filename);   // legacy single-file PART1/PART2 format
+	void export_scanline_level(int framenum, const char* outdir, unsigned char* pScreenBits);
 
 	// Active framebuffer for per-scanline live rendering.
 	// When non-null, render_scanline() writes directly here and render() is a no-op.

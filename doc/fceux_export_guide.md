@@ -1,7 +1,9 @@
-# Generating FCEUX Frame-Level & Scanline-Level Snapshots
+# Generating Frame-Level & Scanline-Level Snapshots (FCEUX and nes1)
 
-This guide covers building the modified FCEUX and running it to export per-frame txt+bmp
-and per-scanline CPU+PPU state traces for nes1 comparison.
+This guide covers building the modified FCEUX and nes1, and running them to export
+per-frame txt+bmp and per-scanline CPU+PPU state files for comparison.
+
+Sections 1–6 cover the **FCEUX** side. Section 7 covers the **nes1** side.
 
 ---
 
@@ -233,3 +235,92 @@ identify which scanline the file describes.
 | `The build tools for v142 cannot be found` | Add `/p:PlatformToolset=v143` to the MSBuild command line. |
 | FCEUX hangs / doesn't exit | Check that the Lua script calls `emu.exit()` at the end. Increase the Start-Process timeout from 60s. |
 | Output files are empty or missing | (1) Verify the output directory exists (`fceux_dense_out`). (2) Check that the path in `fceu.cpp`'s `FCEUX_ExportFrame` call matches the directory. (3) **Known bug (fixed):** `emu.speedmode("nothrottle")` caused `FCEU_LuaFrameskip()` to return -1, which was treated as truthy by the caller, setting `skip=1` for every frame — the export block checked `!skip` and never fired. Fix in `fceu.cpp`: export when `skip < 2` rather than `!skip`. |
+
+---
+
+## 7. nes1 Frame-Level & Scanline-Level Dumps
+
+The native nes1 emulator has the same two-tier export system as the modified FCEUX,
+producing identically structured txt+bmp output for direct comparison.
+
+### 7.1 Build nes1
+
+```powershell
+$msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+& $msbuild "C:\Work\nes1\src\nes1.vcxproj" `
+    /p:Configuration=Debug /p:Platform=x64 /p:PlatformToolset=v143 `
+    /t:Build /v:minimal
+```
+
+Output binary: `C:\Work\nes1\src\x64\Debug\nes1.exe`
+
+### 7.2 Frame-level dump
+
+```powershell
+& 'C:\Work\nes1\src\x64\Debug\nes1.exe' 'C:\Work\nes1\test\mappy\Mappy (Japan).nes' `
+    --frametest 'C:\Work\nes1\test\mappy_out\nes1_dense_out' 270 1
+```
+
+Arguments: `--frametest <outdir> <nframes> <interval>`
+
+- `nframes`: total frames to emulate (270 = matches FCEUX export)
+- `interval`: save every Nth frame (`1` = every frame)
+
+**Output** (270 × 2 = 540 files):
+```
+nes1_dense_out\
+├── nes1_frame_0001.txt
+├── nes1_frame_0001.bmp
+├── ...
+├── nes1_frame_0270.txt
+└── nes1_frame_0270.bmp
+```
+
+Each `.txt` has the same 8-section format as the FCEUX frame-level file:
+`CPU State`, `PPU Registers`, `Nametable`, `Palette`, `Active Sprites`,
+`ASCII Screen`, `CPU RAM`.
+
+### 7.3 Scanline-level dump
+
+```powershell
+& 'C:\Work\nes1\src\x64\Debug\nes1.exe' 'C:\Work\nes1\test\mappy\Mappy (Japan).nes' `
+    --scanlinetrace 'C:\Work\nes1\test\mappy_out\nes1_sl_dump_f5' 5
+```
+
+Arguments: `--scanlinetrace <outdir> <frame_number>`
+
+**Output** (240 × 2 = 480 files):
+```
+nes1_sl_dump_f5\
+├── nes1_frame_0005_sl_000.txt    ← scanline 0 dump
+├── nes1_frame_0005_sl_000.bmp    ← full frame, scanline 0 row tinted red
+├── ...
+├── nes1_frame_0005_sl_239.txt
+└── nes1_frame_0005_sl_239.bmp
+```
+
+Each `_sl_YYY.txt` has the same 7 sections as the frame-level txt (using the
+per-scanline captured state) plus `=== NT Writes During Scanline ===`:
+
+| Section | Source data |
+|---|---|
+| `=== CPU State ===` | CPU registers at end of scanline |
+| `=== PPU Registers ===` | PPUCTRL, PPUMASK, PPUSTATUS, v, t, fine_x, mirroring, scroll decoded from V |
+| `=== Nametable ($2000–$23BF) ===` | Physical NT bank 0 snapshot at end of scanline |
+| `=== Palette ($3F00–$3F1F) ===` | Raw palette snapshot (BG: $3F00–$3F0F, SPR: $3F10–$3F1F) |
+| `=== Active Sprites (OAM) ===` | OAM snapshot at end of scanline |
+| `=== ASCII Screen ===` | Brightness ASCII art from full rendered frame |
+| `=== CPU RAM ($0000–$07FF) ===` | 2KB CPU RAM at end of scanline |
+| `=== NT Writes During Scanline ===` | All $2007 NT/AT writes during this scanline's CPU window |
+
+Each `_sl_YYY.bmp` is the complete rendered frame with row `YYY` tinted red
+(R = (R+255)/2, G /= 2, B /= 2).
+
+### 7.4 Key source files (nes1)
+
+| File | Role |
+|---|---|
+| `src/nes1.cpp` | `run_frametest()` — calls `export_frame` every N frames; `run_scanlinetrace()` — calls `capture_scanline_trace`/`render_scanline` per scanline, then `export_scanline_level` |
+| `src/ppu.cpp` | `export_frame()` — 7-section txt + BMP; `capture_scanline_trace()` — snapshots CPU/PPU/NT/OAM/RAM at end of each scanline; `export_scanline_level()` — writes 240 per-scanline txt+bmp pairs |
+| `src/ppu.h` | `ScanlineTraceEntry` struct (per-scanline state including nametable, cpu\_ram, oam\_snap, palette, PPU registers); `NtWrite` struct |
+
