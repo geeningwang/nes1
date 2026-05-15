@@ -78,7 +78,39 @@ char *ParseArgies(int argc, char *argv[])
 	   return(0);
 	}
 
-    int used = ParseArguments(argc-1, &argv[1], FCEUArgs);
+    // Set all flag values by running the standard parser.
+    ParseArguments(argc-1, &argv[1], FCEUArgs);
 
-    return(argv[used+1]);
+    // Build the ROM path by collecting all args that are not flags or flag values.
+    // This correctly handles filenames with spaces (split into multiple argv elements
+    // when the caller doesn't quote them) and parentheses.
+    static char romPath[2048];
+    romPath[0] = '\0';
+    bool first = true;
+
+    for(int i = 1; i < argc; i++)
+    {
+        if(argv[i][0] == '-')
+        {
+            // Check if this is a known flag that consumes the next arg as a value.
+            for(int f = 0; FCEUArgs[f].var || FCEUArgs[f].subs; f++)
+            {
+                if(FCEUArgs[f].name && !strcmp(argv[i], FCEUArgs[f].name))
+                {
+                    if(FCEUArgs[f].subs && (i + 1) < argc)
+                        i++; // skip the flag's value arg
+                    break;
+                }
+            }
+        }
+        else
+        {
+            // This arg is part of the ROM path (join with space if split by unquoted spaces).
+            if(!first) strcat(romPath, " ");
+            strcat(romPath, argv[i]);
+            first = false;
+        }
+    }
+
+    return first ? nullptr : romPath;
 }

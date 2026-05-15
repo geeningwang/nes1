@@ -1691,7 +1691,6 @@ static int ppu_getscanlinedata(lua_State *L) {
 	}
 	const FCEUXScanlineTrace* tr = FCEUX_GetScanlineTrace();
 	const FCEUXScanlineTrace& e = tr[sl];
-	if (sl == 0) { FILE* dbg = fopen("C:/Work/nes1/test/mappy_out/ppu_getsl_debug.txt", "a"); if(dbg){ fprintf(dbg, "ppu_getscanlinedata sl=0 tr=%p cycles=%u pc=%04X sizeof=%u\n", (void*)tr, e.cpu_cycles, (unsigned)e.cpu_pc, (unsigned)sizeof(FCEUXScanlineTrace)); const unsigned char* raw = (const unsigned char*)&e; fprintf(dbg, "  raw[0..7]: %02X %02X %02X %02X %02X %02X %02X %02X\n", raw[0],raw[1],raw[2],raw[3],raw[4],raw[5],raw[6],raw[7]); fclose(dbg); } }
 
 	lua_createtable(L, 0, 20);
 	// Start-of-scanline fields

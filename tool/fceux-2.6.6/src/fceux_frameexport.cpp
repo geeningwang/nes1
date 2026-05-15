@@ -30,6 +30,9 @@ extern X6502 X;
 extern uint32 timestamp;
 extern uint64 timestampbase;
 
+// CPU RAM (2KB at $0000-$07FF)
+extern uint8 *RAM;
+
 // Pixel buffer: 256*256 bytes, each is a palette index
 extern uint8 *XBuf;
 
@@ -55,17 +58,13 @@ void FCEUX_CaptureBeginScanline(int sl)
     e.ppu_v_start    = RefreshAddr;
     e.ppuctrl_start  = PPU[0];
     e.ppumask_start  = PPU[1];
+    e.nt_write_cnt   = 0;     // reset NT write log for this scanline
 }
 
 // Called at END of visible scanline's CPU window (after X6502_Run(256)).
 void FCEUX_CaptureScanlineTrace(int sl)
 {
     if (sl < 0 || sl >= 240) return;
-    static int capture_count = 0;
-    if (++capture_count <= 5) {
-        FILE* dbg = fopen("C:/Work/nes1/test/mappy_out/fceux_capture_debug.txt", "a");
-        if (dbg) { fprintf(dbg, "FCEUX_CaptureScanlineTrace sl=%d CYC=%llu PC=%04X\n", sl, (unsigned long long)(timestampbase + timestamp), (unsigned int)X.PC); fclose(dbg); }
-    }
     FCEUXScanlineTrace& e = g_sl_trace[sl];
     e.cpu_pc     = (unsigned short)X.PC;
     e.cpu_a      = X.A;
@@ -82,6 +81,39 @@ void FCEUX_CaptureScanlineTrace(int sl)
     e.ppumask    = PPU[1];
     for (int i = 0; i < 32; ++i)
         e.palette[i] = PALRAM[i];
+
+    // Decode render scroll from end-of-scanline V register
+    {
+        uint32 vr = RefreshAddr;
+        int coarse_x = vr & 0x1F;
+        int coarse_y = (vr >> 5) & 0x1F;
+        int fine_y   = (vr >> 12) & 0x7;
+        e.ss_x  = (short)(coarse_x * 8 + XOffset);
+        e.ss_y  = (short)(coarse_y * 8 + fine_y);
+        e.ss_nt = (unsigned char)((vr >> 10) & 3);
+    }
+}
+
+// Log a $2007 NT/AT write during a visible scanline's CPU window.
+// Called from the PPU write handler (B2007) when scanline trace is active.
+// Only writes in the $2000-$3EFF range (nametable/attribute) are logged.
+void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc)
+{
+    extern int scanline;
+    if (scanline < 0 || scanline >= 240) return;
+    FCEUXScanlineTrace& e = g_sl_trace[scanline];
+    if (e.nt_write_cnt >= 64) return;   // cap at 64 per scanline
+    FCEUXNtWrite& w = e.nt_writes[e.nt_write_cnt++];
+    // dot: approximate from CPU cycle offset within scanline (3 PPU dots per CPU cycle)
+    extern uint32 timestamp;
+    // timestamp is the CPU cycle counter since last timestampbase reset.
+    // Within a scanline, X6502_Run(256) runs 256/3 ≈ 85 CPU cycles for visible portion,
+    // then X6502_Run(16) for HBlank ≈ 5 cycles.  Use the lower bits of timestamp mod ~114.
+    // For simplicity, use the raw timestamp (caller could refine later).
+    w.dot    = (int)(timestamp % 114) * 3;  // approximate PPU dot
+    w.addr   = (unsigned short)(addr & 0x3FFF);
+    w.val    = val;
+    w.cpu_pc = pc;
 }
 
 void FCEUX_ExportScanlineTrace(const char* outpath)
@@ -92,7 +124,6 @@ void FCEUX_ExportScanlineTrace(const char* outpath)
     // PART1: per-scanline summary, one row per visible scanline.
     // Columns match nes1's export_scanline_trace() PART1 format:
     //   SL V_S V_E T_E FX W CTL MSK SSX SS_Y SSNT NTw CYC PC A X Y S P PAL
-    // FCEUX outputs 0 for SSX/SS_Y/SSNT (not tracked by C-side capture).
     fprintf(f, "=== PART1 ===\n");
     fprintf(f, "# %-3s  %-5s %-5s %-5s %2s %1s  %2s  %2s  %3s %6s %4s  %3s  %-8s  %-4s %-2s %-2s %-2s %-2s %-2s  PAL\n",
         "SL", "V_S", "V_E", "T_E", "FX", "W", "CTL", "MSK",
@@ -103,33 +134,41 @@ void FCEUX_ExportScanlineTrace(const char* outpath)
         char pal64[65] = {};
         for (int i = 0; i < 32; ++i)
             snprintf(pal64 + i * 2, 3, "%02X", e.palette[i]);
-        fprintf(f, "  %3d  %04X  %04X  %04X  %d  %d  %02X  %02X  %3d %6d    %d  %3d  %8u  %04X %02X %02X %02X %02X %02X  %s\n",
+        fprintf(f, "  %3d  %04X  %04X  %04X  %d  %d  %02X  %02X  %3d %6d %4d  %3d  %8u  %04X %02X %02X %02X %02X %02X  %s\n",
             sl,
             e.ppu_v_start & 0x7FFF, e.ppu_v & 0x7FFF, e.ppu_t & 0x7FFF,
             e.ppu_fine_x, e.ppu_w,
-            e.ppuctrl, e.ppumask,
-            0, 0, 0,           // SSX, SS_Y, SSNT – not available from C-side
-            0,                 // NTw – not tracked C-side; Lua script fills this
+            e.ppuctrl_start, e.ppumask_start,
+            (int)e.ss_x, (int)e.ss_y, (int)e.ss_nt,
+            e.nt_write_cnt,
             e.cpu_cycles,
             e.cpu_pc, e.cpu_a, e.cpu_x, e.cpu_y, e.cpu_s, e.cpu_p,
             pal64);
     }
 
+    // PART2: per-write log (every $2007 NT/AT write logged per scanline)
+    // Columns match nes1's PART2 format:
+    //   SEQ  SL  DOT  V_BEF  V_AFT  NTADDR  VAL  PC
+    fprintf(f, "\n=== PART2 ===\n");
+    fprintf(f, "# %-5s %-3s %-5s %-5s %-5s %-5s %-3s  PC\n",
+        "SEQ", "SL", "DOT", "V_BEF", "V_AFT", "NTADDR", "VAL");
+
+    int seq = 0;
+    for (int sl = 0; sl < 240; ++sl) {
+        const FCEUXScanlineTrace& e = g_sl_trace[sl];
+        for (int i = 0; i < e.nt_write_cnt && i < 64; ++i) {
+            const FCEUXNtWrite& w = e.nt_writes[i];
+            // V_BEF = w.addr (the target address equals V at write time for $2007)
+            // V_AFT is not tracked separately; use ---- as placeholder.
+            fprintf(f, "  %5d  %3d  %4d  %04X  ----  %04X  %02X  %04X\n",
+                ++seq, sl, w.dot, w.addr, w.addr, w.val, w.cpu_pc);
+        }
+    }
+
     fclose(f);
 }
 
-// Nametable read via vnapage (mirrors NTARAM for NROM)
-static uint8 nt_read(uint32 addr)
-{
-    // addr in $2000-$23FF range (first nametable)
-    uint32 a = addr - 0x2000;
-    uint8 *page = vnapage[(a >> 10) & 3];
-    if (page)
-        return page[a & 0x3FF];
-    return NTARAM[a & 0x7FF];
-}
-
-void FCEUX_ExportFrame(int framenum, const char* outdir)
+void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
 {
     char txtpath[512];
     snprintf(txtpath, sizeof(txtpath), "%s\\fceux_frame_%04d.txt", outdir, framenum);
@@ -254,6 +293,16 @@ void FCEUX_ExportFrame(int framenum, const char* outdir)
         }
     } else {
         fprintf(f, "(no pixel buffer)\n");
+    }
+
+    // --- CPU RAM ($0000-$07FF) ---
+    if (RAM) {
+        fprintf(f, "\n=== CPU RAM ($0000-$07FF) ===\n");
+        for (int row = 0; row < 64; ++row) {
+            for (int col = 0; col < 32; ++col)
+                fprintf(f, "%02X ", RAM[row * 32 + col]);
+            fprintf(f, "\n");
+        }
     }
 
     fclose(f);

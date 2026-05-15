@@ -470,16 +470,24 @@ void UpdateRendBounds()
 	FCEUI_SetRenderedLines(srendlinen, erendlinen, srendlinep, erendlinep);
 }
 
-/// Shows an error message in a message box.
+/// Shows an error message.  In GUI mode shows a message box; in batch/headless
+/// mode (no window created yet) prints to stderr so automated scripts can see it.
 ///@param errormsg Text of the error message.
 void FCEUD_PrintError(const char *errormsg)
 {
 	AddLogText(errormsg, 1);
 
+	// Always print to stderr for console/automation visibility
+	fprintf(stderr, "FCEUX Error: %s\n", errormsg);
+
+	// Only show message box if we have a GUI window (skip in batch/Lua-auto mode)
+	if (!hAppWnd)
+		return;
+
 	if (fullscreen && (eoptions & EO_HIDEMOUSE))
 		ShowCursorAbs(1);
 
-	MessageBox(0, errormsg, FCEU_NAME" Error", MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+	MessageBox(hAppWnd, errormsg, FCEU_NAME" Error", MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
 
 	if (fullscreen && (eoptions & EO_HIDEMOUSE))
 		ShowCursorAbs(0);

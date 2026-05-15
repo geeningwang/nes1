@@ -266,6 +266,208 @@
 			"label": "Make dense report",
 			"type": "shell",
 			"command": "powershell -ExecutionPolicy Bypass -File 'C:\\Work\\nes1\\test\\make_dense_report.ps1'"
+		},
+		{
+			"label": "FCEUX Export",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\x64\\Release\\fceux64.exe",
+			"args": [
+				"-lua",
+				"C:\\Work\\nes1\\test\\mappy\\frame_level\\auto_export.lua",
+				"C:\\Work\\nes1\\test\\mappy\\Mappy (Japan).nes"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "FCEUX Export via batch",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\test\\mappy\\run_fceux_export.bat",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build FCEUX Release",
+			"type": "shell",
+			"command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Kill FCEUX and rebuild",
+			"type": "shell",
+			"command": "taskkill /f /im fceux64.exe 2>nul & C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Kill FCEUX",
+			"type": "shell",
+			"command": "taskkill",
+			"args": [
+				"/f",
+				"/im",
+				"fceux64.exe"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build FCEUX",
+			"type": "shell",
+			"command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run FCEUX export",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\test\\mappy\\run_fceux_export.bat",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Kill + Rebuild",
+			"type": "shell",
+			"command": "taskkill",
+			"args": [
+				"/f",
+				"/im",
+				"fceux64.exe",
+				"2>nul"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Kill FCEUX",
+			"type": "shell",
+			"command": "taskkill",
+			"args": [
+				"/f",
+				"/im",
+				"fceux64.exe"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build FCEUX with debug",
+			"type": "shell",
+			"command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run FCEUX export",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\test\\mappy\\run_fceux_export.bat",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test minimal FCEUX",
+			"type": "shell",
+			"command": "cmd /c copy /y \"C:\\Work\\nes1\\test\\mappy\\Mappy (Japan).nes\" \"C:\\Work\\nes1\\test\\mappy_out\\mappy.nes\" && \"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\x64\\Release\\fceux64.exe\" -lua \"C:\\Work\\nes1\\test\\mappy\\frame_level\\minimal_test.lua\" \"C:\\Work\\nes1\\test\\mappy_out\\mappy.nes\" && echo EXIT: %ERRORLEVEL%",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test FCEUX with minimal script",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\test\\mappy\\run_fceux_export.bat",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build clean FCEUX",
+			"type": "shell",
+			"command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Kill FCEUX first",
+			"type": "shell",
+			"command": "taskkill",
+			"args": [
+				"/f",
+				"/im",
+				"fceux64.exe"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build FCEUX",
+			"type": "shell",
+			"command": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+			"args": [
+				"C:\\Work\\nes1\\tool\\fceux-2.6.6\\vc\\vc14_fceux.vcxproj",
+				"/p:Configuration=Release",
+				"/p:Platform=x64",
+				"/p:PlatformToolset=v143",
+				"/t:Build",
+				"/m",
+				"/v:minimal"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run FCEUX export via batch",
+			"type": "shell",
+			"command": "C:\\Work\\nes1\\test\\mappy\\run_fceux_export.bat",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

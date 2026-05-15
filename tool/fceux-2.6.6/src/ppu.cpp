@@ -1000,6 +1000,10 @@ static DECLFW(B2007) {
 		if (PPU_hook)
 			PPU_hook(RefreshAddr & 0x3fff);
 	}
+
+	// Per-scanline trace: log $2007 NT/AT writes during visible scanlines
+	if (FCEUX_ScanlineTraceActive() && tmp >= 0x2000 && tmp < 0x3F00)
+		FCEUX_LogNTWrite(tmp, V, (unsigned short)X.PC);
 }
 
 static DECLFW(B4014) {
@@ -1811,11 +1815,11 @@ int FCEUPPU_Loop(int skip) {
 			}
 		}
 		PPU_status &= 0x1f;
-// Per-scanline trace: capture V/PPU state at START of this scanline's CPU window
-  if (scanline < 240 && FCEUX_ScanlineTraceActive())
-          FCEUX_CaptureBeginScanline(scanline);
+		// Per-scanline trace: capture V/PPU state at START of this scanline's CPU window
+		if (scanline < 240 && FCEUX_ScanlineTraceActive())
+			FCEUX_CaptureBeginScanline(scanline);
 
-  X6502_Run(256);
+		X6502_Run(256);
 
 		{
 			int x;
