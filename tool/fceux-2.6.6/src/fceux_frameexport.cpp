@@ -11,6 +11,9 @@
 
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // FCEUX PPU globals (from ppu.cpp)
 extern uint8  NTARAM[0x800];
@@ -130,6 +133,9 @@ void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc)
 // The BMP shows the full rendered frame with scanline sl highlighted in red.
 void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
 {
+#ifdef _WIN32
+    CreateDirectoryA(outdir, NULL);
+#endif
     const char* shades = " .:-=+*#%%@";
     const int nshades = 10;
 

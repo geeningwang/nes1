@@ -65,11 +65,15 @@ The `lua51.dll` ships with FCEUX's source at:
 
 If missing after a first-time build, copy from the source location above.
 
-### 2.3 Create output directory
+### 2.3 Create output directories
 
 ```powershell
+# Frame-level dump output (must exist before running)
 New-Item -ItemType Directory -Force `
     -Path "C:\Work\nes1\test\mappy_out\fceux_dense_out"
+
+# Scanline-level dump output is created automatically by FCEUX
+# (directory name: fceux_sl_dump_fN, where N = export_sl_frame in fceu.cpp)
 ```
 
 ### 2.4 Prepare the Lua script
@@ -131,12 +135,13 @@ fceux64.exe -lua auto_export.lua "Mappy (Japan).nes"
    - `FCEUPPU_Loop()` — emulates the frame, `CaptureBeginScanline`/`CaptureScanlineTrace` called for each scanline
    - `FCEUX_DisableScanlineTrace()` — ends capture
    - `FCEUX_ExportFrame(framenum, 270, outdir)` — writes the txt + bmp for this frame
-   - For frame 1 only: `FCEUX_ExportScanlineTrace(outpath)` — writes the per-scanline trace file
+   - If this is the configured scanline-level frame: `FCEUX_ExportScanlineLevel(framenum, sl_outdir)` — creates `fceux_sl_dump_fN\` (auto-mkdir) and writes 240 txt + bmp pairs
 6. After 270 frames, `emu.exit()` terminates FCEUX
 >
 > **Selecting the scanline-level frame:** Edit `export_sl_frame` in
 > `tool/fceux-2.6.6/src/fceu.cpp` (line ~870) to choose which frame gets the
-> 240 per-scanline files. Default is frame 5.
+> 240 per-scanline files. Default is frame 5. The output directory is named
+> `fceux_sl_dump_fN` (e.g. `fceux_sl_dump_f5`) and is created automatically.
 
 ---
 
@@ -173,10 +178,11 @@ Each `.txt` contains:
 ### 4.2 Scanline-level snapshots
 
 For the one frame configured via `export_sl_frame` (default: frame 5), a pair of
-files is written for each of the 240 visible scanlines:
+files is written for each of the 240 visible scanlines into a dedicated directory
+(created automatically):
 
 ```
-C:\Work\nes1\test\mappy_out\fceux_dense_out\
+C:\Work\nes1\test\mappy_out\fceux_sl_dump_f5\   ← name derived from export_sl_frame
 ├── fceux_frame_0005_sl_000.txt    ← scanline 0 dump
 ├── fceux_frame_0005_sl_000.bmp    ← full frame, scanline 0 highlighted
 ├── fceux_frame_0005_sl_001.txt
