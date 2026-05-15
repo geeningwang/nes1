@@ -36,8 +36,10 @@ extern uint64 timestampbase;
 // CPU RAM (2KB at $0000-$07FF)
 extern uint8 *RAM;
 
-// Pixel buffer: 256*256 bytes, each is a palette index
+// Pixel buffer: 256*256 bytes, each is a palette index.
+// XBackBuf is saved before OSD/messages are drawn, so it has the clean frame.
 extern uint8 *XBuf;
+extern uint8 *XBackBuf;
 
 // ── Per-scanline trace ────────────────────────────────────────────────────────
 // FCEUXScanlineTrace struct is defined in fceux_frameexport.h
@@ -206,13 +208,13 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
 
         // --- ASCII Screen (32x30 tiles) ---
         fprintf(f, "\n=== ASCII Screen (32x30 tiles) ===\n");
-        if (XBuf && palo) {
+        if (XBackBuf && palo) {
             for (int ty = 0; ty < 30; ++ty) {
                 for (int tx = 0; tx < 32; ++tx) {
                     int sum = 0;
                     for (int py = 0; py < 8; ++py)
                         for (int px = 0; px < 8; ++px) {
-                            uint8 idx = XBuf[(ty * 8 + py) * 256 + (tx * 8 + px)] & 0x3F;
+                            uint8 idx = XBackBuf[(ty * 8 + py) * 256 + (tx * 8 + px)] & 0x3F;
                             sum += palo[idx].r + palo[idx].g + palo[idx].b;
                         }
                     int brightness = sum / (64 * 3);
@@ -249,7 +251,7 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
         fclose(f);
 
         // ---- BMP file: full frame with scanline sl highlighted in red ----
-        if (!XBuf || !palo) continue;
+        if (!XBackBuf || !palo) continue;
 
         char bmppath[512];
         snprintf(bmppath, sizeof(bmppath), "%s\\fceux_frame_%04d_sl_%03d.bmp", outdir, framenum, sl);
@@ -282,7 +284,7 @@ void FCEUX_ExportScanlineLevel(int framenum, const char* outdir)
 
         for (int y = 0; y < H; ++y) {
             for (int x = 0; x < W; ++x) {
-                uint8 idx = XBuf[y * 256 + x] & 0x3F;
+                uint8 idx = XBackBuf[y * 256 + x] & 0x3F;
                 uint8 r = palo[idx].r, g = palo[idx].g, b = palo[idx].b;
                 if (y == sl) { r = (uint8)((r + 255) / 2); g /= 2; b /= 2; }
                 unsigned char px[4] = { b, g, r, 0xFF };
@@ -396,7 +398,7 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
     fprintf(f, "\n=== ASCII Screen (32x30 tiles) ===\n");
     const char* shades = " .:-=+*#%%@";
     int nshades = 10;
-    if (XBuf && palo) {
+    if (XBackBuf && palo) {
         for (int ty = 0; ty < 30; ++ty) {
             for (int tx = 0; tx < 32; ++tx) {
                 int sum = 0;
@@ -404,7 +406,7 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
                     for (int px = 0; px < 8; ++px) {
                         int row = ty * 8 + py;
                         int col = tx * 8 + px;
-                        uint8 idx = XBuf[row * 256 + col] & 0x3F;
+                        uint8 idx = XBackBuf[row * 256 + col] & 0x3F;
                         sum += palo[idx].r;
                         sum += palo[idx].g;
                         sum += palo[idx].b;
@@ -433,7 +435,7 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
     fclose(f);
 
     // --- BMP output (32bpp BGRA, top-down, height=-240, matches nes1) ---
-    if (!XBuf || !palo) return;
+    if (!XBackBuf || !palo) return;
 
     char bmppath[512];
     snprintf(bmppath, sizeof(bmppath), "%s\\fceux_frame_%04d.bmp", outdir, framenum);
@@ -475,10 +477,10 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
     memcpy(dib + 36, &clr,    4);
     fwrite(dib, 1, 40, bf);
 
-    // Write pixels: XBuf rows 0..239, columns 0..255
+    // Write pixels: XBackBuf rows 0..239, columns 0..255 (clean frame, no OSD)
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
-            uint8 idx = XBuf[y * 256 + x] & 0x3F;
+            uint8 idx = XBackBuf[y * 256 + x] & 0x3F;
             uint8 r = palo[idx].r;
             uint8 g = palo[idx].g;
             uint8 b = palo[idx].b;

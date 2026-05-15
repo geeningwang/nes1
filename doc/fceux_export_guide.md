@@ -241,6 +241,7 @@ identify which scanline the file describes.
 | `The build tools for v142 cannot be found` | Add `/p:PlatformToolset=v143` to the MSBuild command line. |
 | FCEUX hangs / doesn't exit | Check that the Lua script calls `emu.exit()` at the end. Increase the Start-Process timeout from 60s. |
 | Output files are empty or missing | (1) Verify the output directory exists (`fceux_dense_out`). (2) Check that the path in `fceu.cpp`'s `FCEUX_ExportFrame` call matches the directory. (3) **Known bug (fixed):** `emu.speedmode("nothrottle")` caused `FCEU_LuaFrameskip()` to return -1, which was treated as truthy by the caller, setting `skip=1` for every frame — the export block checked `!skip` and never fired. Fix in `fceu.cpp`: export when `skip < 2` rather than `!skip`. |
+| `Emulation speed 6400%` text visible in BMP snapshots | **Fixed** — `FCEUX_ExportFrame` and `FCEUX_ExportScanlineLevel` now read pixels from `XBackBuf` (the clean copy saved in `video.cpp` before `DrawMessage()` burns OSD text onto `XBuf`). |
 
 ---
 
