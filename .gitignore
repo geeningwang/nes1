@@ -21,6 +21,7 @@ src/Release/
 
 # Test output
 test/mappy_out/
+test/mappy/mappy_out/
 
 # Debug/dump output files
 src/frame_dump.bmp
