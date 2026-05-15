@@ -131,9 +131,10 @@ fceux64.exe -lua auto_export.lua "Mappy (Japan).nes"
    - `FCEUX_ExportFrame(framenum, 270, outdir)` — writes the txt + bmp for this frame
    - For frame 1 only: `FCEUX_ExportScanlineTrace(outpath)` — writes the per-scanline trace file
 6. After 270 frames, `emu.exit()` terminates FCEUX
-
-> **Performance:** With `nothrottle` mode on a modern machine, 270 frames complete in
-> approximately 5–10 seconds.
+>
+> **Selecting the scanline-level frame:** Edit `export_sl_frame` in
+> `tool/fceux-2.6.6/src/fceu.cpp` (line ~870) to choose which frame gets the
+> 240 per-scanline files. Default is frame 5.
 
 ---
 
@@ -167,44 +168,46 @@ Each `.txt` contains:
 | `=== CPU RAM ===` | Full 2KB ($0000–$07FF), 64×32 hex dump |
 | Companion `.bmp` | 256×240 32bpp BGRA, top-down |
 
-### 4.2 Scanline-level trace (frame 1)
+### 4.2 Scanline-level snapshots
+
+For the one frame configured via `export_sl_frame` (default: frame 5), a pair of
+files is written for each of the 240 visible scanlines:
 
 ```
-C:\Work\nes1\test\mappy_out\fceux_dense_out\fceux_scanline_trace_f0001.txt
+C:\Work\nes1\test\mappy_out\fceux_dense_out\
+├── fceux_frame_0005_sl_000.txt    ← scanline 0 dump
+├── fceux_frame_0005_sl_000.bmp    ← full frame, scanline 0 highlighted
+├── fceux_frame_0005_sl_001.txt
+├── fceux_frame_0005_sl_001.bmp
+├── ...
+├── fceux_frame_0005_sl_239.txt
+└── fceux_frame_0005_sl_239.bmp
 ```
 
-**PART1** — One row per visible scanline (0–239):
+Each `_sl_YYY.txt` has **exactly the same 7 sections** as the frame-level `.txt`,
+using the CPU/PPU/memory state captured at the **end of that scanline**, plus one
+additional section at the end:
 
-| Column | Description |
+| Section | Source data |
 |---|---|
-| SL | Scanline index (0–239) |
-| V_S | V register at START of scanline (before CPU run) |
-| V_E | V register at END of scanline (after CPU run + rendering) |
-| T_E | T (temp) register at end |
-| FX | fine_x (3 bits) |
-| W | W/latch toggle |
-| CTL | PPUCTRL at START of scanline |
-| MSK | PPUMASK at START of scanline |
-| SSX | Render scroll X (decoded from V: coarse_x×8 + fine_x) |
-| SS_Y | Render scroll Y (decoded: coarse_y×8 + fine_y) |
-| SSNT | Render nametable selection (bits 10–11 of V) |
-| NTw | Number of $2007 NT/AT writes during this scanline |
-| CYC | Cumulative CPU cycle counter at end of scanline |
-| PC A X Y S P | CPU registers at end of scanline |
-| PAL | 64-char hex string: 32 palette bytes |
+| `=== CPU State ===` | CPU registers at end of scanline |
+| `=== PPU Registers ===` | PPUCTRL, PPUMASK, PPUSTATUS, v, t, fine_x, mirroring, scroll |
+| `=== Nametable ($2000–$23BF) ===` | Physical NT RAM (NT bank 0 tiles) at end of scanline |
+| `=== Palette ($3F00–$3F1F) ===` | Palette snapshot at end of scanline |
+| `=== Active Sprites (OAM) ===` | OAM snapshot at end of scanline |
+| `=== ASCII Screen ===` | Brightness ASCII art from full rendered frame |
+| `=== CPU RAM ($0000–$07FF) ===` | Full 2KB CPU RAM at end of scanline |
+| `=== NT Writes During Scanline ===` | All $2007 NT/AT writes during this scanline's CPU window |
 
-**PART2** — One row per $2007 NT/AT write:
+The `NT Writes During Scanline` section lists each write as:
+```
+#   DOT  NTADDR  VAL   PC
+ 0   123   2284   00   CC0E
+```
 
-| Column | Description |
-|---|---|
-| SEQ | Sequential write number (global, 1-based) |
-| SL | Scanline the write occurred on |
-| DOT | Approximate PPU dot within scanline |
-| V_BEF | NT/AT address written (= V at write time) |
-| V_AFT | Placeholder (----) — not tracked |
-| NTADDR | Mirrored address written ($2000–$2FFF) |
-| VAL | Byte value written |
-| PC | CPU PC at time of write |
+Each `_sl_YYY.bmp` is the complete rendered frame (256×240) with row `YYY`
+tinted red (mixed 50% toward red, green and blue halved) so you can immediately
+identify which scanline the file describes.
 
 ---
 
@@ -212,9 +215,9 @@ C:\Work\nes1\test\mappy_out\fceux_dense_out\fceux_scanline_trace_f0001.txt
 
 | File | Role |
 |---|---|
-| `tool/fceux-2.6.6/src/fceu.cpp` | Enables scanline trace, calls `FCEUX_ExportFrame` + `FCEUX_ExportScanlineTrace` after each frame |
-| `tool/fceux-2.6.6/src/fceux_frameexport.cpp` | Contains `CaptureBeginScanline`, `CaptureScanlineTrace`, `LogNTWrite`, `ExportScanlineTrace`, `ExportFrame` |
-| `tool/fceux-2.6.6/src/fceux_frameexport.h` | `FCEUXScanlineTrace` struct, `FCEUXNtWrite` struct, function declarations |
+| `tool/fceux-2.6.6/src/fceu.cpp` | Enables scanline trace, calls `FCEUX_ExportFrame` for every frame and `FCEUX_ExportScanlineLevel` for the configured frame (`export_sl_frame`) |
+| `tool/fceux-2.6.6/src/fceux_frameexport.cpp` | Contains `CaptureBeginScanline`, `CaptureScanlineTrace`, `LogNTWrite`, `ExportFrame`, `ExportScanlineLevel` |
+| `tool/fceux-2.6.6/src/fceux_frameexport.h` | `FCEUXScanlineTrace` struct (includes per-scanline NT RAM, CPU RAM, OAM, palette, PPU registers), `FCEUXNtWrite` struct, function declarations |
 | `tool/fceux-2.6.6/src/ppu.cpp` | `DoLine()` calls `CaptureScanlineTrace`; `FCEUPPU_Loop` calls `CaptureBeginScanline`; `B2007` hooks `LogNTWrite` |
 | `tool/fceux-2.6.6/src/lua-engine.cpp` | Exposes `ppu.getscanlinedata`, `ppu.getloopy`, `ppu.getcurrentline`, `emu.getregisters`, `emu.getcycles` to Lua |
 | `test/mappy/frame_level/auto_export.lua` | Lua script that advances 270 frames and exits |
