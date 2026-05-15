@@ -116,15 +116,13 @@ void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc)
     w.cpu_pc = pc;
 }
 
-void FCEUX_ExportScanlineTrace(const char* outpath)
+// Write PART1+PART2 scanline trace to an already-open file.
+static void WriteScanlineTrace(FILE* f)
 {
-    FILE* f = fopen(outpath, "w");
-    if (!f) return;
-
     // PART1: per-scanline summary, one row per visible scanline.
     // Columns match nes1's export_scanline_trace() PART1 format:
     //   SL V_S V_E T_E FX W CTL MSK SSX SS_Y SSNT NTw CYC PC A X Y S P PAL
-    fprintf(f, "=== PART1 ===\n");
+    fprintf(f, "\n=== PART1 ===\n");
     fprintf(f, "# %-3s  %-5s %-5s %-5s %2s %1s  %2s  %2s  %3s %6s %4s  %3s  %-8s  %-4s %-2s %-2s %-2s %-2s %-2s  PAL\n",
         "SL", "V_S", "V_E", "T_E", "FX", "W", "CTL", "MSK",
         "SSX", "SS_Y", "SSNT", "NTw", "CYC", "PC", "A", "X", "Y", "S", "P");
@@ -158,14 +156,10 @@ void FCEUX_ExportScanlineTrace(const char* outpath)
         const FCEUXScanlineTrace& e = g_sl_trace[sl];
         for (int i = 0; i < e.nt_write_cnt && i < 64; ++i) {
             const FCEUXNtWrite& w = e.nt_writes[i];
-            // V_BEF = w.addr (the target address equals V at write time for $2007)
-            // V_AFT is not tracked separately; use ---- as placeholder.
             fprintf(f, "  %5d  %3d  %4d  %04X  ----  %04X  %02X  %04X\n",
                 ++seq, sl, w.dot, w.addr, w.addr, w.val, w.cpu_pc);
         }
     }
-
-    fclose(f);
 }
 
 void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
@@ -304,6 +298,9 @@ void FCEUX_ExportFrame(int framenum, int nframes, const char* outdir)
             fprintf(f, "\n");
         }
     }
+
+    // --- Scanline trace (PART1+PART2) appended to the same file ---
+    WriteScanlineTrace(f);
 
     fclose(f);
 

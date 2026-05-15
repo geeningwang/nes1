@@ -866,13 +866,6 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 			export_framenum++;
 		if (skip < 2 && export_nframes > 0 && export_framenum >= 1 && export_framenum <= export_nframes)
 			FCEUX_ExportFrame(export_framenum, export_nframes, "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out");
-		// Also export per-scanline trace for frame 1
-		if (skip < 2 && export_framenum == 1)
-		{
-			char slpath[512];
-			snprintf(slpath, sizeof(slpath), "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out\\fceux_scanline_trace_f%04d.txt", export_framenum);
-			FCEUX_ExportScanlineTrace(slpath);
-		}
 	}
 
 #ifdef __WIN_DRIVER__

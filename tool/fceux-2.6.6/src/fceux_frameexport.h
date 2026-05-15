@@ -51,5 +51,4 @@ bool FCEUX_ScanlineTraceActive();
 void FCEUX_CaptureBeginScanline(int sl);
 void FCEUX_CaptureScanlineTrace(int sl);
 void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc);
-void FCEUX_ExportScanlineTrace(const char* outpath);
 const FCEUXScanlineTrace* FCEUX_GetScanlineTrace();
