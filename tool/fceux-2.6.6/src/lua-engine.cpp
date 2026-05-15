@@ -1,4 +1,4 @@
-#if defined(__linux__) || defined(__unix__) 
+﻿#if defined(__linux__) || defined(__unix__) 
 #include <stdlib.h>
 #include <unistd.h>
 #define SetCurrentDir chdir
@@ -32,6 +32,7 @@
 #include "cheat.h"
 #include "x6502.h"
 #include "ppu.h"
+#include "fceux_frameexport.h"
 #include "utils/xstring.h"
 #include "utils/memory.h"
 #include "utils/crc32.h"
@@ -162,23 +163,75 @@ extern void AddRecentLuaFile(const char *filename);
 extern bool turbo;
 extern int32 fps_scale;
 
+// externs for PPU state exposed to Lua
+extern uint32 TempAddr;    // T register (loopy)
+extern uint32 RefreshAddr; // V register (loopy)
+extern uint8  XOffset;     // fine X
+extern uint8  vtoggle;     // W/toggle
+
+static int ppu_getcurrentline(lua_State *L) {
+	lua_pushinteger(L, scanline);
+	return 1;
+}
+
+static int ppu_getloopy(lua_State *L) {
+	lua_createtable(L, 0, 4);
+	lua_pushinteger(L, (int)RefreshAddr);
+	lua_setfield(L, -2, "v");
+	lua_pushinteger(L, (int)TempAddr);
+	lua_setfield(L, -2, "t");
+	lua_pushinteger(L, (int)XOffset);
+	lua_setfield(L, -2, "finex");
+	lua_pushinteger(L, (int)vtoggle);
+	lua_setfield(L, -2, "w");
+	return 1;
+}
+
+static int emu_getregisters(lua_State *L) {
+	lua_createtable(L, 0, 6);
+	lua_pushinteger(L, (int)_PC);
+	lua_setfield(L, -2, "pc");
+	lua_pushinteger(L, (int)_A);
+	lua_setfield(L, -2, "a");
+	lua_pushinteger(L, (int)_X);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, (int)_Y);
+	lua_setfield(L, -2, "y");
+	lua_pushinteger(L, (int)_S);
+	lua_setfield(L, -2, "s");
+	lua_pushinteger(L, (int)_P);
+	lua_setfield(L, -2, "p");
+	return 1;
+}
+
+// emu.getcycles() – returns total CPU cycles since power-on (timestampbase + timestamp)
+static int emu_getcycles(lua_State *L) {
+   extern uint64 timestampbase;
+   extern uint32 timestamp;
+   lua_pushinteger(L, (lua_Integer)(timestampbase + (uint64)timestamp));
+   return 1;
+}
+
 struct LuaSaveState {
-	std::string filename;
-	EMUFILE_MEMORY *data;
-	bool anonymous, persisted;
-	LuaSaveState()
-		: data(0)
-		, anonymous(false)
-		, persisted(false)
-	{}
-	~LuaSaveState() {
-		if(data) delete data;
-	}
-	void persist() {
-		persisted = true;
-		FILE* outf = fopen(filename.c_str(),"wb");
-		fwrite(data->buf(),1,data->size(),outf);
+std::string filename;
+EMUFILE_MEMORY *data;
+bool anonymous, persisted;
+LuaSaveState()
+: data(0)
+, anonymous(false)
+, persisted(false)
+{}
+~LuaSaveState() {
+if(data) delete data;
+}
+void persist() {
+if(!data) return;
+persisted = true;
+FILE* outf = fopen(filename.c_str(),"wb");
+if(outf) {
+fwrite(data->buf(),1,data->size(),outf);
 		fclose(outf);
+	}
 	}
 	void ensureLoad() {
 		if(data) return;
@@ -1623,6 +1676,67 @@ static int ppu_readbyterange(lua_State *L) {
 	}
 
 	lua_pushlstring(L, buf, range_size);
+
+	return 1;
+}
+
+// ppu.getscanlinedata(sl) -- returns a table with full CPU+PPU state captured
+// at the end of scanline sl's CPU window (0-239).  Data is from the most recently
+// rendered frame.  Fields match FCEUXScanlineTrace.
+static int ppu_getscanlinedata(lua_State *L) {
+	int sl = luaL_checkinteger(L, 1);
+	if (sl < 0 || sl >= 240) {
+		lua_pushnil(L);
+		return 1;
+	}
+	const FCEUXScanlineTrace* tr = FCEUX_GetScanlineTrace();
+	const FCEUXScanlineTrace& e = tr[sl];
+	if (sl == 0) { FILE* dbg = fopen("C:/Work/nes1/test/mappy_out/ppu_getsl_debug.txt", "a"); if(dbg){ fprintf(dbg, "ppu_getscanlinedata sl=0 tr=%p cycles=%u pc=%04X sizeof=%u\n", (void*)tr, e.cpu_cycles, (unsigned)e.cpu_pc, (unsigned)sizeof(FCEUXScanlineTrace)); const unsigned char* raw = (const unsigned char*)&e; fprintf(dbg, "  raw[0..7]: %02X %02X %02X %02X %02X %02X %02X %02X\n", raw[0],raw[1],raw[2],raw[3],raw[4],raw[5],raw[6],raw[7]); fclose(dbg); } }
+
+	lua_createtable(L, 0, 20);
+	// Start-of-scanline fields
+	lua_pushinteger(L, (lua_Integer)(e.ppu_v_start & 0x7FFF));
+	lua_setfield(L, -2, "v_start");
+	lua_pushinteger(L, (lua_Integer)e.ppuctrl_start);
+	lua_setfield(L, -2, "ppuctrl_start");
+	lua_pushinteger(L, (lua_Integer)e.ppumask_start);
+	lua_setfield(L, -2, "ppumask_start");
+	// End-of-scanline CPU registers
+	lua_pushinteger(L, (lua_Integer)e.cpu_pc);
+	lua_setfield(L, -2, "pc");
+	lua_pushinteger(L, (lua_Integer)e.cpu_a);
+	lua_setfield(L, -2, "a");
+	lua_pushinteger(L, (lua_Integer)e.cpu_x);
+	lua_setfield(L, -2, "x");
+	lua_pushinteger(L, (lua_Integer)e.cpu_y);
+	lua_setfield(L, -2, "y");
+	lua_pushinteger(L, (lua_Integer)e.cpu_s);
+	lua_setfield(L, -2, "s");
+	lua_pushinteger(L, (lua_Integer)e.cpu_p);
+	lua_setfield(L, -2, "p");
+	lua_pushinteger(L, (lua_Integer)e.cpu_cycles);
+	lua_setfield(L, -2, "cycles");
+	// End-of-scanline PPU Loopy registers
+	lua_pushinteger(L, (lua_Integer)(e.ppu_v & 0x7FFF));
+	lua_setfield(L, -2, "v");
+	lua_pushinteger(L, (lua_Integer)(e.ppu_t & 0x7FFF));
+	lua_setfield(L, -2, "t");
+	lua_pushinteger(L, (lua_Integer)e.ppu_fine_x);
+	lua_setfield(L, -2, "fine_x");
+	lua_pushinteger(L, (lua_Integer)e.ppu_w);
+	lua_setfield(L, -2, "w");
+	// PPU control registers at end of scanline
+	lua_pushinteger(L, (lua_Integer)e.ppuctrl);
+	lua_setfield(L, -2, "ppuctrl");
+	lua_pushinteger(L, (lua_Integer)e.ppumask);
+	lua_setfield(L, -2, "ppumask");
+	// Full palette (1-indexed table of 32 bytes)
+	lua_createtable(L, 32, 0);
+	for (int i = 0; i < 32; ++i) {
+		lua_pushinteger(L, (lua_Integer)e.palette[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
+	lua_setfield(L, -2, "palette");
 
 	return 1;
 }
@@ -6064,7 +6178,9 @@ static const struct luaL_reg emulib [] = {
 	{"loadrom", emu_loadrom},
 	{"print", print}, // sure, why not
 	{"exit", emu_exit}, // useful for run-and-close scripts
-	{NULL,NULL}
+	{"getregisters", emu_getregisters},
+  {"getcycles", emu_getcycles},
+  {NULL,NULL}
 };
 
 static const struct luaL_reg romlib [] = {
@@ -6110,7 +6226,9 @@ static const struct luaL_reg memorylib [] = {
 static const struct luaL_reg ppulib [] = {
 	{"readbyte", ppu_readbyte},
 	{"readbyterange", ppu_readbyterange},
-
+	{"getcurrentline", ppu_getcurrentline},
+	{"getloopy", ppu_getloopy},
+  {"getscanlinedata", ppu_getscanlinedata},
 	{NULL,NULL}
 };
 
@@ -6311,6 +6429,18 @@ void CallExitFunction()
 void FCEU_LuaFrameBoundary()
 {
 	//printf("Lua Frame\n");
+
+	// If exit was requested from a registerbefore/registerafter callback, honour it
+	// even though luaRunning is FALSE (coroutine already completed).
+	if (exitScheduled && !luaRunning) {
+#ifdef __WIN_DRIVER__
+		DoFCEUExit();
+#else
+		fceuWrapperRequestAppExit();
+		exitScheduled = FALSE;
+#endif
+		return;
+	}
 
 	// HA!
 	if (!L || !luaRunning)

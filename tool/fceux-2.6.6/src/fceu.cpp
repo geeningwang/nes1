@@ -93,6 +93,10 @@ extern void RefreshThrottleFPS();
 #include <cstdarg>
 #include <ctime>
 
+#include "fceux_frameexport.h"
+#define FCEUX_FRAMEEXPORT_OUTDIR "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out"
+#define FCEUX_FRAMEEXPORT_NFRAMES 270
+
 using namespace std;
 
 //-----------
@@ -834,7 +838,13 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 #endif
 
 	if (geniestage != 1) FCEU_ApplyPeriodicCheats();
+
+	// Enable per-scanline trace for every frame (data accessible to Lua via ppu.getscanlinedata)
+	FCEUX_EnableScanlineTrace();
+
 	r = FCEUPPU_Loop(skip);
+
+	FCEUX_DisableScanlineTrace();
 
 	if (skip != 2) ssize = FlushEmulateSound();  //If skip = 2 we are skipping sound processing
 
@@ -842,10 +852,18 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 	FCEUD_FlushTrace();
 
 #ifdef _S9XLUA_H
+	{ const FCEUXScanlineTrace* tr = FCEUX_GetScanlineTrace(); FILE* f = fopen("C:/Work/nes1/test/mappy_out/fceux_luacall_debug.txt", "a"); if(f){ fprintf(f, "About to call LUACALL_AFTEREMULATION sl0.cycles=%u sl0.pc=%04X tr=%p sizeof=%u\n", tr[0].cpu_cycles, (unsigned)tr[0].cpu_pc, (void*)tr, (unsigned)sizeof(FCEUXScanlineTrace)); const unsigned char* raw = (const unsigned char*)&tr[0]; fprintf(f, "  raw[0..7]: %02X %02X %02X %02X %02X %02X %02X %02X\n", raw[0],raw[1],raw[2],raw[3],raw[4],raw[5],raw[6],raw[7]); fclose(f); } }
 	CallRegisteredLuaFunctions(LUACALL_AFTEREMULATION);
 #endif
 
 	FCEU_PutImage();
+
+	// Per-frame instrumentation export for nes1 comparison
+	{
+		extern int currFrameCounter;
+		if (!skip && currFrameCounter >= 1 && currFrameCounter <= FCEUX_FRAMEEXPORT_NFRAMES)
+			FCEUX_ExportFrame(currFrameCounter, FCEUX_FRAMEEXPORT_OUTDIR);
+	}
 
 #ifdef __WIN_DRIVER__
 	//These Windows only dialogs need to be updated only once per frame so they are included here

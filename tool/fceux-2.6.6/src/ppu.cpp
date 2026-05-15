@@ -33,6 +33,7 @@
 #include "palette.h"
 #include "state.h"
 #include "video.h"
+#include "fceux_frameexport.h"
 #include "input.h"
 #include "driver.h"
 #include "debug.h"
@@ -1393,6 +1394,11 @@ static void DoLine(void) {
 		RefreshSprites();
 	if (GameHBIRQHook2 && (ScreenON || SpriteON))
 		GameHBIRQHook2();
+
+	// Per-scanline trace: capture CPU+PPU state at end of visible scanline's CPU run
+	if (scanline < 240 && FCEUX_ScanlineTraceActive())
+		FCEUX_CaptureScanlineTrace(scanline);
+
 	scanline++;
 	if (scanline < 240) {
 		ResetRL(XBuf + (scanline << 8));
@@ -1805,7 +1811,11 @@ int FCEUPPU_Loop(int skip) {
 			}
 		}
 		PPU_status &= 0x1f;
-		X6502_Run(256);
+// Per-scanline trace: capture V/PPU state at START of this scanline's CPU window
+  if (scanline < 240 && FCEUX_ScanlineTraceActive())
+          FCEUX_CaptureBeginScanline(scanline);
+
+  X6502_Run(256);
 
 		{
 			int x;
