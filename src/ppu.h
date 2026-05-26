@@ -106,10 +106,14 @@ public:
 	//   end_scanline(sl)      – call after each scanline's CPU cycles; snapshots scroll
 	//   snap_nmi_scroll()     – call immediately after cpu.nmi() returns; saves post-NMI scroll
 	void begin_frame();
+	void set_frame_cpu_cycle_base(unsigned int cyc) { frame_cpu_cycle_base = cyc; }
 	void begin_scanline(int scanline);  // call BEFORE each scanline's run_ppu — snaps palette
 	void render_scanline(int sl, unsigned char* fb); // per-scanline live rendering (reads live mem[])
 	void check_sprite0_hit(int scanline);
 	void end_scanline(int scanline);
+	void defer_nt_writes_to_scanline(int scanline);
+	void suppress_nt_writes();
+	void resume_nt_writes();
 	void snap_nmi_scroll();
 	// Call between run_ppu(256) and run_ppu(69) of the pre-render scanline.
 	// Captures T's vertical bits so begin_frame() uses the pre-dot-280 vertical scroll,
@@ -233,8 +237,12 @@ private:
 	// rendered output matches FCEUX's per-dot rendering.
 	unsigned char nt_snapshot[0x800];          // NT state before this scanline's CPU run
 	static const int kMaxNtWrites = 64;        // max logged writes per scanline
-	NtWrite        nt_write_log[kMaxNtWrites]; // writes during cur_scanline's CPU window
+	NtWrite        nt_write_log[kMaxNtWrites]; // writes attributed to the active scanline
 	int            nt_write_count;             // entries used in nt_write_log[]
+	NtWrite        pending_nt_write_log[kMaxNtWrites];
+	int            pending_nt_write_count;
+	int            pending_nt_write_scanline;
+	bool           capture_nt_writes;
 
 	int          cur_scanline;        // visible scanline being executed; -1 if outside window
 	unsigned int sl_cpu_cycle_base;   // cpu_ptr->cycle at the start of this scanline's CPU run

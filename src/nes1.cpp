@@ -585,6 +585,8 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 	{
 		bool is_target = (f == target_frame);
 		bool dead = (f <= 2);
+		if (is_target)
+			ppu.set_frame_cpu_cycle_base(cpu.cycle);
 		if (dead) {
 			run_ppu_tr(262 * 341);
 			continue;
@@ -623,7 +625,12 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 			if (is_target) {
 				ppu.capture_scanline_trace(sl, &cpu);
 			}
+			if (sl + 1 < 240)
+				ppu.defer_nt_writes_to_scanline(sl + 1);
+			else
+				ppu.suppress_nt_writes();
 			run_ppu_tr(16);
+			ppu.resume_nt_writes();
 			ppu.end_scanline(sl);
 			if (is_target)
 				ppu.render_scanline(sl, screen_buf);

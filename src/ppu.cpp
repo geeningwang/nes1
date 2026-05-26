@@ -196,6 +196,9 @@ ppu_2c02::ppu_2c02()
 	cpu_ptr           = nullptr;
 	cur_scanline      = -1;
 	nt_write_count    = 0;
+	pending_nt_write_count = 0;
+	pending_nt_write_scanline = -1;
+	capture_nt_writes = true;
 	sl_cpu_cycle_base = 0;
 	frame_cpu_cycle_base = 0;
 	memset(nt_snapshot, 0, sizeof(nt_snapshot));
@@ -798,7 +801,7 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		v += (reg_ctrl & 0x04) ? 32 : 1;
 		// Log NT writes that happen during a visible scanline's CPU window so
 		// render_scanline() can apply them at the correct tile boundary.
-		if (cur_scanline >= 0 && nt_write_count < kMaxNtWrites && cpu_ptr) {
+		if (cpu_ptr && (capture_nt_writes || pending_nt_write_scanline >= 0)) {
 			unsigned short nt_addr = write_v & 0x3FFF;
 			if (nt_addr >= 0x2000 && nt_addr <= 0x3EFF) {
 				// Match FCEUX's approximate per-write dot export:
@@ -808,7 +811,11 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 				unsigned int frame_cycles = (cpu_ptr->cycle + cpu_ptr->get_pending_instruction_cycles()) - frame_cpu_cycle_base;
 				int dot = (int)((frame_cycles % 114) * 3);
 				NtWrite nw = { dot, mirror_nt_addr(nt_addr), val, cpu_ptr->get_pc() };
-				nt_write_log[nt_write_count++] = nw;
+				if (capture_nt_writes && cur_scanline >= 0 && nt_write_count < kMaxNtWrites) {
+					nt_write_log[nt_write_count++] = nw;
+				} else if (pending_nt_write_scanline >= 0 && pending_nt_write_count < kMaxNtWrites) {
+					pending_nt_write_log[pending_nt_write_count++] = nw;
+				}
 			}
 		}
 		break;
@@ -875,7 +882,6 @@ void ppu_2c02::oam_dma(unsigned char* page_data)
 
 void ppu_2c02::begin_frame()
 {
-	frame_cpu_cycle_base = cpu_ptr ? cpu_ptr->cycle : 0;
 	// Clear sprite-0 hit (reset at pre-render scanline on real HW)
 	reg_status &= ~0x40;
 	// Snapshot OAM at the start of visible scanlines — before the game's main
@@ -899,6 +905,9 @@ void ppu_2c02::begin_frame()
 	// Clear mid-render V-reset flag at the start of each frame.
 	mid_render_v_reset = false;
 	mid_render_v_new   = 0;
+	pending_nt_write_count = 0;
+	pending_nt_write_scanline = -1;
+	capture_nt_writes = true;
 	for (int sl = 0; sl < 240; ++sl)
 	{
 		scanline_scroll[sl].scroll_x  = seed_scroll_x;
@@ -968,6 +977,14 @@ void ppu_2c02::begin_scanline(int sl)
 	// VRAM; render_scanline() replays them at per-tile boundaries.
 	memcpy(nt_snapshot, mem + 0x2000, 0x800);
 	nt_write_count    = 0;
+	if (pending_nt_write_scanline == sl) {
+		nt_write_count = pending_nt_write_count;
+		for (int i = 0; i < pending_nt_write_count; ++i)
+			nt_write_log[i] = pending_nt_write_log[i];
+		pending_nt_write_count = 0;
+		pending_nt_write_scanline = -1;
+	}
+	capture_nt_writes = true;
 	cur_scanline      = sl;
 	sl_cpu_cycle_base = cpu_ptr ? cpu_ptr->cycle : 0;
 
@@ -989,7 +1006,27 @@ void ppu_2c02::end_scanline(int sl)
 	// Scroll and palette are now captured in begin_scanline (before cpu).
 	// Only clear the mid-render V-reset flag here.
 	mid_render_v_reset = false;
+	capture_nt_writes = true;
 	cur_scanline = -1;  // no longer inside a visible CPU window
+}
+
+void ppu_2c02::defer_nt_writes_to_scanline(int sl)
+{
+	capture_nt_writes = false;
+	pending_nt_write_count = 0;
+	pending_nt_write_scanline = sl;
+}
+
+void ppu_2c02::suppress_nt_writes()
+{
+	capture_nt_writes = false;
+	pending_nt_write_count = 0;
+	pending_nt_write_scanline = -1;
+}
+
+void ppu_2c02::resume_nt_writes()
+{
+	capture_nt_writes = true;
 }
 
 void ppu_2c02::export_frame(unsigned char* pScreenBits, const char* filename, cpu_6502* cpu)
