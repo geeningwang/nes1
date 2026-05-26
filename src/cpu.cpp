@@ -136,6 +136,7 @@ cpu_6502::cpu_6502()
 	joypad1_state = 0;
 	joypad1_strobe = false;
 	joypad1_shift = 0;
+	pending_instruction_cycles = 0;
 }
 
 cpu_6502::~cpu_6502()
@@ -440,6 +441,7 @@ void cpu_6502::reset()
 	rpc = *((unsigned short *)(mem + 0xfffc));
 	// Do NOT charge cycles here — FCEUX processes the reset vector fetch inside
 	// X6502_Run() at zero extra cost, so cycle 0 is the first instruction.
+	pending_instruction_cycles = 0;
 
 	return;
 }
@@ -622,6 +624,7 @@ bool cpu_6502::step(bool log)
 	}
 
 	rpc += instruction_size;
+	pending_instruction_cycles = (unsigned char)instruction_cycles;
 
 	// Operation
 	bool store = false;
@@ -1094,6 +1097,7 @@ bool cpu_6502::step(bool log)
 	}
 
 	cycle += instruction_cycles;
+	pending_instruction_cycles = 0;
 
 	// output whole line
 	if (log)

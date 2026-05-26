@@ -31,6 +31,7 @@ public:
 	unsigned char  get_y()  const { return ry; }
 	unsigned char  get_s()  const { return rsp; }
 	unsigned char  get_p()  const { return rp; }
+	unsigned char  get_pending_instruction_cycles() const { return pending_instruction_cycles; }
 
 	// Joypad 1 button state (set from outside each frame)
 	// bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
@@ -54,4 +55,5 @@ private:
 	unsigned char *mem;
 	ppu_2c02* ppu;
 	apu_2a03* apu;
+	unsigned char pending_instruction_cycles;
 };

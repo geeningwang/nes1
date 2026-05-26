@@ -56,8 +56,10 @@ struct FCEUXScanlineTrace {
 void FCEUX_EnableScanlineTrace();
 void FCEUX_DisableScanlineTrace();
 bool FCEUX_ScanlineTraceActive();
+bool FCEUX_ScanlineTraceHasData();
 void FCEUX_CaptureBeginScanline(int sl);
 void FCEUX_CaptureScanlineTrace(int sl);
 void FCEUX_LogNTWrite(uint32 addr, uint8 val, unsigned short pc);
 void FCEUX_ExportScanlineLevel(int framenum, const char* outdir);
+void FCEUX_WriteScanlineDumpStatus(int framenum, const char* outdir, const char* status, const char* reason);
 const FCEUXScanlineTrace* FCEUX_GetScanlineTrace();

@@ -56,20 +56,48 @@ function Bmp-ToB64([string]$path) {
 # ── State comparison (txt files) ──────────────────────────────────────────────
 function Compare-Txt([string]$pN, [string]$pE) {
     $r = [ordered]@{
+        TxtPresent=1; TxtLengthOK=1; TxtIssues=@()
         CpuOK=1; CpuNes1=''; CpuFceux=''
         PcNes1=''; PcFceux=''
+        CycleNes1=''; CycleFceux=''; CycleDelta=''; CycleOK=1
         PpuOK=1; PpuDiffs=@()
         PpuStatusOK=1; PpuStatusNes1=''; PpuStatusFceux=''
         PalOK=1; PalNes1=''; PalFceux=''
         NtOK=1;  NtDiffs=0
         OamOK=1; OamDiffs=@()
         LoopyOK=1; LoopyNes1=''; LoopyFceux=''
-        ScrollNes1=''; ScrollFceux=''
+        ScrollOK=1; ScrollNes1=''; ScrollFceux=''
         RamOK=1; RamDiffs=0; RamPresent=$false
     }
-    if (!(Test-Path $pN) -or !(Test-Path $pE)) { return $r }
+    if (!(Test-Path $pN) -or !(Test-Path $pE)) {
+        $r.TxtPresent = 0
+        $r.TxtIssues += "missing txt: nes1=$([int](Test-Path $pN)) fceux=$([int](Test-Path $pE))"
+        return $r
+    }
     $nl = Get-Content $pN
     $el = Get-Content $pE
+    if ($nl.Count -ne $el.Count) {
+        $r.TxtLengthOK = 0
+        $r.TxtIssues += "line count differs: nes1=$($nl.Count) fceux=$($el.Count)"
+    }
+    $cpuLineN = $nl | Select-String '^PC=' | Select-Object -First 1
+    $cpuLineE = $el | Select-String '^PC=' | Select-Object -First 1
+    if ($cpuLineN -and $cpuLineE) {
+        $r.PcNes1 = [string]$cpuLineN.Line
+        $r.PcFceux = [string]$cpuLineE.Line
+        if ($r.PcNes1 -match 'cycles=(\d+)') { $r.CycleNes1 = [long]$Matches[1] }
+        if ($r.PcFceux -match 'cycles=(\d+)') { $r.CycleFceux = [long]$Matches[1] }
+        if (($r.CycleNes1 -ne '') -and ($r.CycleFceux -ne '')) {
+            $r.CycleDelta = [long]$r.CycleNes1 - [long]$r.CycleFceux
+            $r.CycleOK = ([long]$r.CycleDelta -eq 0)
+        }
+    } elseif ($cpuLineN -or $cpuLineE) {
+        $r.CpuOK = 0
+        $r.CpuNes1 = if ($cpuLineN) { [string]$cpuLineN.Line } else { '<missing CPU line>' }
+        $r.CpuFceux = if ($cpuLineE) { [string]$cpuLineE.Line } else { '<missing CPU line>' }
+        $r.CycleOK = 0
+        $r.TxtIssues += 'CPU line missing on one side'
+    }
     # Detect whether both files contain a RAM section (new-format txt only)
     $r.RamPresent = (($nl -match '=== CPU RAM') -and ($el -match '=== CPU RAM'))
     $section = ''
@@ -85,50 +113,21 @@ function Compare-Txt([string]$pN, [string]$pE) {
         }
         if ($n -eq $e) { continue }
         if ($n -match '^PC=') {
-            # Compare A/X/Y/S/P only. PC and cycle count are capture-timing sensitive:
-            # the game idles in a 2-instruction loop (C06D/C06F) — NES1 and FCEUX
-            # can capture at different points in that loop due to kook-frame phasing.
-            # Cycles drift by instruction-boundary overshoot. Neither indicates a bug.
-            $extract = { param($s)
-                if ($s -match 'A=([0-9A-F]+) X=([0-9A-F]+) Y=([0-9A-F]+) S=([0-9A-F]+) P=([0-9A-F]+)') {
-                    "$($Matches[1])$($Matches[2])$($Matches[3])$($Matches[4])$($Matches[5])"
-                } else { $s }
-            }
-            $nr = & $extract $n; $er = & $extract $e
-            if ($nr -ne $er) {
-                $r.CpuOK=0; $r.CpuNes1=$n; $r.CpuFceux=$e
-            }
-            # Always capture full CPU line for informational PC/cycles display
-            if (-not $r.PcNes1) { $r.PcNes1=$n; $r.PcFceux=$e }
+            $r.CpuOK=0; $r.CpuNes1=$n; $r.CpuFceux=$e
         } elseif ($n -match '^PPUSTATUS') {
             $r.PpuStatusOK=0; $r.PpuStatusNes1=$n; $r.PpuStatusFceux=$e
         } elseif ($n -match '^PPUCTRL|^PPUMASK') {
             $r.PpuOK=0; $r.PpuDiffs += "$($n.Split(' ')[0])|nes1=$n|fceux=$e"
         } elseif ($n -match '^v=|^render_scroll') {
-            # V/T can diverge at frame-end without a pixel error (architectural: NES1
-            # captures V after all scanlines while FCEUX captures mid-frame V).  Treat
-            # as informational. render_scroll is derived from V so also informational.
             if ($n -match '^v=') {
                 $r.LoopyNes1=$n; $r.LoopyFceux=$e
                 if ($n -ne $e) { $r.LoopyOK=0 }
             } else {
                 $r.ScrollNes1=$n; $r.ScrollFceux=$e
+                if ($n -ne $e) { $r.ScrollOK=0 }
             }
         } elseif ($n -match '^BG:|^SPR:') {
-            # For SPR: lines, normalize bytes 0,4,8,12 to '00' before comparing.
-            # These slots ($3F10/$3F14/$3F18/$3F1C) are hardware mirrors of the BG
-            # transparent color; writes are redirected to $3F00 leaving physical RAM
-            # at $3F10 etc. as 00. NES1 txt files (pre-fix) may show the mirrored
-            # value here instead. We suppress that specific diff.
-            if ($n -match '^SPR:') {
-                $nNorm = $n -replace '^SPR: (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+)','SPR: 00 $2 00 $4 00 $6 00 $8'
-                $eNorm = $e -replace '^SPR: (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+) (\S+) (\S+ \S+ \S+)','SPR: 00 $2 00 $4 00 $6 00 $8'
-                if ($nNorm -ne $eNorm) {
-                    $r.PalOK=0; $r.PalNes1+="$n  "; $r.PalFceux+="$e  "
-                }
-            } else {
-                $r.PalOK=0; $r.PalNes1+="$n  "; $r.PalFceux+="$e  "
-            }
+            $r.PalOK=0; $r.PalNes1+="$n  "; $r.PalFceux+="$e  "
         } elseif ($n -match '^[0-9A-F]{2} ') {
             if ($section -eq 'RAM') { $r.RamOK=0; $r.RamDiffs++ }
             else { $r.NtOK=0; $r.NtDiffs++ }
@@ -148,6 +147,7 @@ function HE([string]$s) { $s -replace '&','&amp;' -replace '<','&lt;' -replace '
 # ── Main loop ─────────────────────────────────────────────────────────────────
 $rows = [System.Collections.Generic.List[hashtable]]::new()
 $nPass=0; $nFail=0
+[int]$nCycleDiff = 0
 
 Write-Host "Generating dense report for $NFrames frames..."
 
@@ -167,10 +167,11 @@ for ($f=1; $f-le$NFrames; $f++) {
     $b64E = if (Test-Path $pE_bmp) { Bmp-ToB64 $pE_bmp } else { '' }
 
     $pixPass = $pix.OK -and ($pix.DiffPx -eq 0)
-    $stPass  = $st.CpuOK -and $st.PpuOK -and $st.PalOK -and $st.NtOK -and $st.OamOK -and (-not $st.RamPresent -or $st.RamOK)
+    $stPass  = $st.TxtPresent -and $st.TxtLengthOK -and $st.CpuOK -and $st.CycleOK -and $st.PpuOK -and $st.PpuStatusOK -and $st.PalOK -and $st.NtOK -and $st.OamOK -and $st.LoopyOK -and $st.ScrollOK -and (-not $st.RamPresent -or $st.RamOK)
     $allPass = $pixPass -and $stPass
 
     if ($allPass) { $nPass++ } else { $nFail++ }
+    if (-not $st.CycleOK) { $nCycleDiff++ }
 
     $rows.Add(@{
         F=$f; PixPass=$pixPass; StPass=$stPass; AllPass=$allPass
@@ -208,15 +209,22 @@ foreach ($r in $rows) {
         '<span class="fail">{0} px (max&Delta;={1})</span>' -f $r.DiffPx,$r.MaxD
     }
 
-    # CPU cell — show A/X/Y/S/P diff; PC/cycles shown as info when they diverge
-    $pcInfo = ''
-    if ($st.PcNes1 -and ($st.PcNes1 -ne $st.PcFceux)) {
-        $pcInfo = '<br><code class="inf">nes1:{0}</code><br><code class="inf2">fceux:{1}</code>' -f (HE $st.PcNes1),(HE $st.PcFceux)
-    }
-    $cpuCell = if ($st.CpuOK) {
-        '<span class="ok">OK</span>' + $pcInfo
+    $cpuIssues = @($st.TxtIssues)
+    $cpuIssueHtml = if ($cpuIssues.Count -gt 0) {
+        '<br><code class="d">{0}</code>' -f (HE ($cpuIssues -join '; '))
+    } else { '' }
+    $cpuCell = if ($st.CpuOK -and $st.TxtPresent -and $st.TxtLengthOK) {
+        '<span class="ok">OK</span><br><code class="inf">{0}</code>' -f (HE $st.PcNes1)
     } else {
-        '<span class="fail">DIFF</span><br><code class="d">{0}</code><br><code class="d2">{1}</code>' -f (HE $st.CpuNes1),(HE $st.CpuFceux)
+        '<span class="fail">DIFF</span><br><code class="d">{0}</code><br><code class="d2">{1}</code>{2}' -f (HE $st.CpuNes1),(HE $st.CpuFceux),$cpuIssueHtml
+    }
+
+    $tickCell = if ($st.CycleNes1 -eq '' -or $st.CycleFceux -eq '') {
+        '<span style="color:#888">N/A</span>'
+    } elseif ($st.CycleOK) {
+        '<span class="ok">match</span><br><code class="inf">cycles={0}</code>' -f $st.CycleNes1
+    } else {
+        '<span class="fail">DIFF</span><br><code class="d">nes1:{0}</code><br><code class="d2">fceux:{1}</code><br><code class="inf">delta:{2}</code>' -f $st.CycleNes1,$st.CycleFceux,$st.CycleDelta
     }
 
     # PPU cell — PPUCTRL, PPUMASK, and PPUSTATUS
@@ -226,7 +234,7 @@ foreach ($r in $rows) {
         $ppuLines += '<tr><td class="lbl">{0}</td><td class="d">{1}</td><td class="d2">{2}</td></tr>' -f (HE $parts[0]),(HE ($parts[1] -replace '^nes1=')),((HE ($parts[2] -replace '^fceux=')))
     }
     if (-not $st.PpuStatusOK) {
-        $ppuLines += '<tr><td class="lbl">PPUSTAT*</td><td class="inf">{0}</td><td class="inf2">{1}</td></tr><tr><td colspan="3" style="font-size:9px;color:#888">(* info only: spr0-hit/overflow are timing-dependent)</td></tr>' -f (HE $st.PpuStatusNes1),(HE $st.PpuStatusFceux)
+        $ppuLines += '<tr><td class="lbl">PPUSTAT</td><td class="d">{0}</td><td class="d2">{1}</td></tr>' -f (HE $st.PpuStatusNes1),(HE $st.PpuStatusFceux)
     }
     $ppuCell = if ($st.PpuOK) { 
         if ($st.PpuStatusOK) { '<span class="ok">OK</span>' }
@@ -250,14 +258,16 @@ foreach ($r in $rows) {
         '<span class="fail">DIFF</span><br><code class="d">{0}</code>' -f (HE ($st.OamDiffs -join '; '))
     }
 
-    # V/T cell — shown highlighted when V/T differs; render_scroll shown as sub-info
+    # V/T cell — exact compare in strict mode
     $loopyPart = if ($st.LoopyNes1) {
         $lc1 = if ($st.LoopyOK) { 'inf' } else { 'd' }
         $lc2 = if ($st.LoopyOK) { 'inf2' } else { 'd2' }
         '<code class="{0}">nes1:{1}</code><br><code class="{2}">fceux:{3}</code>' -f $lc1,(HE $st.LoopyNes1),$lc2,(HE $st.LoopyFceux)
     } else { '' }
     $scrollPart = if ($st.ScrollNes1) {
-        '<br><code class="inf">{0}</code><br><code class="inf2">{1}</code>' -f (HE $st.ScrollNes1),(HE $st.ScrollFceux)
+        $sc1 = if ($st.ScrollOK) { 'inf' } else { 'd' }
+        $sc2 = if ($st.ScrollOK) { 'inf2' } else { 'd2' }
+        '<br><code class="{0}">{1}</code><br><code class="{2}">{3}</code>' -f $sc1,(HE $st.ScrollNes1),$sc2,(HE $st.ScrollFceux)
     } else { '' }
     $scrollCell = if ($loopyPart -or $scrollPart) { $loopyPart + $scrollPart } else { '<span class="ok">same</span>' }
 
@@ -279,7 +289,7 @@ foreach ($r in $rows) {
     }
 
     $null = $sb.AppendLine(
-        "<tr style=`"background:$bg`"><td>$badge</td><td><b>F$f</b></td><td>$pixCell</td><td>$cpuCell</td><td>$ppuCell</td><td>$palCell</td><td>$ntCell</td><td>$oamCell</td><td>$ramCell</td><td>$scrollCell<br><small class='inf'>(V/T: info only)</small></td><td>$imgN</td><td>$imgE</td></tr>"
+        "<tr style=`"background:$bg`"><td>$badge</td><td><b>F$f</b></td><td>$pixCell</td><td>$cpuCell</td><td>$tickCell</td><td>$ppuCell</td><td>$palCell</td><td>$ntCell</td><td>$oamCell</td><td>$ramCell</td><td>$scrollCell</td><td>$imgN</td><td>$imgE</td></tr>"
     )
 }
 
@@ -318,13 +328,13 @@ td.lbl{color:#f0c040;font-size:10px;white-space:nowrap}
 <h1>Mappy (Japan) -- Dense Frame Report: nes1 vs FCEUX</h1>
 <p>Generated: $now &nbsp;|&nbsp; Frames: 1-$NFrames (every frame) &nbsp;|&nbsp;
 Pass: <b>$nPass</b> &nbsp; Fail: <b>$nFail</b> &nbsp; Rate: <b>$rate%</b> &nbsp;
-<span class="badge" style="background:$badgeColor">$badgeHead</span></p>
+Tick diffs: <b>$nCycleDiff</b> &nbsp; <span class="badge" style="background:$badgeColor">$badgeHead</span></p>
 <p style="color:#888;font-size:11px">
 Pixel: NES1 256&times;240 vs FCEUX 256&times;240 compared center-aligned, tolerance=0 (exact match).<br>
-CPU A/X/Y/S/P: fail if differ. PC/cycles: shown as info only (idle-loop capture timing). &nbsp;
-PPUCTRL/PPUMASK: fail if differ. PPUSTATUS: shown as info only (spr0-hit &amp; overflow are timing-dependent). &nbsp;
-V/T register: informational only (frame-end V diverges architecturally -- not a pixel-rendering error). &nbsp;
-render_scroll: derived from V, informational. &nbsp;
+Text dump presence and line count: fail if differ. &nbsp;
+CPU line (PC/A/X/Y/S/P) and extracted ticks/cycles: fail if differ. &nbsp;
+PPUCTRL/PPUMASK/PPUSTATUS: fail if differ. &nbsp;
+V/T register and render_scroll: fail if differ. &nbsp;
 NT, Palette, OAM sprite data, CPU RAM ($0000-$07FF): fail if differ (N/A if txt predates RAM export).
 </p>
 
@@ -333,12 +343,13 @@ NT, Palette, OAM sprite data, CPU RAM ($0000-$07FF): fail if differ (N/A if txt 
   <th>Result</th><th>Frame</th>
   <th>Pixels</th>
   <th>CPU (PC/A/X/Y/S/P)</th>
-  <th>PPUCTRL / PPUMASK</th>
+  <th>Ticks / cycles</th>
+  <th>PPU regs / status</th>
   <th>Palette ($3F00-$3F1F)</th>
   <th>Nametable</th>
   <th>OAM</th>
   <th>RAM ($0000-$07FF)</th>
-  <th>V/T (info) &amp; render_scroll</th>
+  <th>V/T &amp; render_scroll</th>
   <th>NES1</th><th>FCEUX</th>
 </tr>
 $tableBody

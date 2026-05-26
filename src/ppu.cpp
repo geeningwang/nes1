@@ -197,6 +197,7 @@ ppu_2c02::ppu_2c02()
 	cur_scanline      = -1;
 	nt_write_count    = 0;
 	sl_cpu_cycle_base = 0;
+	frame_cpu_cycle_base = 0;
 	memset(nt_snapshot, 0, sizeof(nt_snapshot));
 }
 
@@ -800,7 +801,12 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		if (cur_scanline >= 0 && nt_write_count < kMaxNtWrites && cpu_ptr) {
 			unsigned short nt_addr = write_v & 0x3FFF;
 			if (nt_addr >= 0x2000 && nt_addr <= 0x3EFF) {
-				int dot = (int)((cpu_ptr->cycle - sl_cpu_cycle_base) * 3);
+				// Match FCEUX's approximate per-write dot export:
+				//   dot = (timestamp % 114) * 3
+				// where timestamp is frame-local CPU cycles. Use the cycle count
+				// relative to begin_frame(), not the absolute cycle counter.
+				unsigned int frame_cycles = (cpu_ptr->cycle + cpu_ptr->get_pending_instruction_cycles()) - frame_cpu_cycle_base;
+				int dot = (int)((frame_cycles % 114) * 3);
 				NtWrite nw = { dot, mirror_nt_addr(nt_addr), val, cpu_ptr->get_pc() };
 				nt_write_log[nt_write_count++] = nw;
 			}
@@ -869,6 +875,7 @@ void ppu_2c02::oam_dma(unsigned char* page_data)
 
 void ppu_2c02::begin_frame()
 {
+	frame_cpu_cycle_base = cpu_ptr ? cpu_ptr->cycle : 0;
 	// Clear sprite-0 hit (reset at pre-render scanline on real HW)
 	reg_status &= ~0x40;
 	// Snapshot OAM at the start of visible scanlines — before the game's main
@@ -1412,10 +1419,10 @@ void ppu_2c02::export_scanline_level(int framenum, const char* outdir, unsigned 
 		if (e.nt_write_cnt == 0) {
 			fprintf(f, "(none)\n");
 		} else {
-			fprintf(f, "  # |  dot   addr  val   PC\n");
+			fprintf(f, "#   DOT  NTADDR  VAL   PC\n");
 			for (int i = 0; i < e.nt_write_cnt && i < 64; ++i) {
 				const NtWrite& nw = e.nt_writes[i];
-				fprintf(f, " %2d | %4d   %04X  %02X    %04X\n",
+				fprintf(f, "%2d  %4d   %04X   %02X   %04X\n",
 					i, nw.dot, nw.addr, nw.val, nw.cpu_pc);
 			}
 		}

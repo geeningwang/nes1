@@ -535,23 +535,46 @@ static void run_frametest(const char* outdir, int nframes, int interval)
 // Uses capture_scanline_trace() / export_scanline_level().
 static void run_scanlinetrace(const char* outdir, int target_frame)
 {
+	CreateDirectoryA(outdir, NULL);
+
+	auto write_scanline_status = [&](const char* status, const char* reason) {
+		char status_path[512];
+		sprintf_s(status_path, sizeof(status_path), "%s\\scanline_dump_status.txt", outdir);
+		FILE* sf = nullptr;
+		fopen_s(&sf, status_path, "w");
+		if (!sf) return;
+		fprintf(sf, "source=nes1\n");
+		fprintf(sf, "frame=%d\n", target_frame);
+		fprintf(sf, "status=%s\n", status);
+		fprintf(sf, "reason=%s\n", reason ? reason : "");
+		fclose(sf);
+	};
+
+	if (target_frame <= 2) {
+		for (int f = 1; f <= target_frame; ++f)
+			run_one_frame(/*suppress_vbl=*/true);
+		write_scanline_status(
+			"unavailable",
+			"startup ppudead frame: FCEUX does not execute visible scanline tracing here, so per-scanline compare is not authoritative");
+		printf("Scanline dump unavailable for frame %d: startup ppudead frame\n", target_frame);
+		return;
+	}
+
 	// A modified run_one_frame that captures per-scanline state.
 	// We inline the frame loop here and intercept the visible-scanline step.
-	static int ppu_remainder_tr = 0;
-	static int cycle_counter_tr = 0;
+	static int cycle_budget_tr = 0;  // in PPU-cycle units (3 units == 1 CPU cycle)
 	static int kook_tr          = 0;
 
 	auto run_ppu_tr = [&](int ppu_cycles) {
-		ppu_remainder_tr += ppu_cycles;
-		cycle_counter_tr += ppu_remainder_tr / 3;
-		ppu_remainder_tr  %= 3;
-		while (cycle_counter_tr > 0) {
+		cycle_budget_tr += ppu_cycles;
+		while (cycle_budget_tr > 0) {
 			unsigned int before = cpu.cycle;
 			cpu.step(false);
-			cycle_counter_tr -= (int)(cpu.cycle - before);
+			cycle_budget_tr -= (int)(cpu.cycle - before) * 3;
 		}
 	};
 
+	write_scanline_status("valid", "ok");
 	printf("Running %d frames for scanline dump...\n", target_frame);
 
 	// Off-screen render buffer for the target frame (BGRA, 256x240)
@@ -562,7 +585,6 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 	{
 		bool is_target = (f == target_frame);
 		bool dead = (f <= 2);
-
 		if (dead) {
 			run_ppu_tr(262 * 341);
 			continue;
@@ -571,7 +593,14 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 		run_ppu_tr(341);
 		ppu.raise_vblank();
 		run_ppu_tr(12);
-		if (ppu.nmi_enabled()) cpu.nmi();
+		if (ppu.nmi_enabled()) {
+			cpu.nmi();
+			// Keep scanline-trace timing identical to the normal frame runner:
+			// cpu.nmi() charges 7 cycles directly to cpu.cycle, so we must
+			// remove them from the pending budget or this path runs the CPU
+			// ~7 cycles too far before visible scanlines begin.
+			cycle_budget_tr -= 21;
+		}
 		ppu.snap_nmi_scroll();
 		run_ppu_tr(6808);
 		ppu.snap_pre_render_vscroll();
@@ -585,12 +614,19 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 		for (int sl = 0; sl < 240; ++sl) {
 			ppu.begin_scanline(sl);
 			ppu.check_sprite0_hit(sl);
-			run_ppu_tr(341);
+			// Match FCEUX's visible-line CPU budgeting more closely:
+			// X6502_Run(256), then later X6502_Run(69), then capture, then X6502_Run(16).
+			// Keeping the 256/69 boundary matters because instruction-boundary
+			// overshoot debt is observed at each call boundary.
+			run_ppu_tr(256);
+			run_ppu_tr(69);
 			if (is_target) {
 				ppu.capture_scanline_trace(sl, &cpu);
-				ppu.render_scanline(sl, screen_buf);
 			}
+			run_ppu_tr(16);
 			ppu.end_scanline(sl);
+			if (is_target)
+				ppu.render_scanline(sl, screen_buf);
 		}
 	}
 

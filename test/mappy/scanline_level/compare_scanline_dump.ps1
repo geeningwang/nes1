@@ -7,6 +7,23 @@ param(
 
 Add-Type -AssemblyName System.Drawing
 
+function Get-DumpStatus([string]$dir) {
+    $path = Join-Path $dir 'scanline_dump_status.txt'
+    $result = @{ Status='unknown'; Reason=''; Source=''; Frame='' }
+    if (-not (Test-Path $path)) { return $result }
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        $parts = $line -split '=', 2
+        if ($parts.Count -ne 2) { continue }
+        switch ($parts[0].Trim()) {
+            'status' { $result.Status = $parts[1].Trim() }
+            'reason' { $result.Reason = $parts[1].Trim() }
+            'source' { $result.Source = $parts[1].Trim() }
+            'frame'  { $result.Frame  = $parts[1].Trim() }
+        }
+    }
+    return $result
+}
+
 function Get-NormalizedText([string]$path) {
     if (-not (Test-Path $path)) { return $null }
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -54,6 +71,16 @@ function Compare-BmpPixels([string]$nes1Path, [string]$fceuxPath, [int]$skipRow)
 [int]$bmpDiff = 0
 $firstTxt = @()
 $firstBmp = @()
+$nes1Status = Get-DumpStatus $Nes1Dir
+$fceuxStatus = Get-DumpStatus $FceuxDir
+
+if ($nes1Status.Status -ne 'valid' -or $fceuxStatus.Status -ne 'valid') {
+    Write-Host "Scanline dump compare, frame $Frame"
+    Write-Host "  Status: unavailable"
+    Write-Host "  NES1:  $($nes1Status.Status)  $($nes1Status.Reason)"
+    Write-Host "  FCEUX: $($fceuxStatus.Status)  $($fceuxStatus.Reason)"
+    exit 0
+}
 
 for ([int]$sl = 0; $sl -lt 240; ++$sl) {
     $nTxt = Join-Path $Nes1Dir  ("nes1_frame_{0:D4}_sl_{1:D3}.txt" -f $Frame, $sl)

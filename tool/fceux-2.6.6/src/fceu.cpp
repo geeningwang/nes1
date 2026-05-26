@@ -867,13 +867,23 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 		if (skip < 2 && export_nframes > 0 && export_framenum >= 1 && export_framenum <= export_nframes)
 			FCEUX_ExportFrame(export_framenum, export_nframes, "C:\\Work\\nes1\\test\\mappy_out\\fceux_dense_out");
 		// Scanline-level dump: 240 per-scanline files for one specific frame.
-		// Change export_sl_frame to select which frame to dump.
-		const int export_sl_frame = 1;
+		// Set FCEUX_EXPORT_SL_FRAME to select which frame to dump.
+		const char* export_sl_env = getenv("FCEUX_EXPORT_SL_FRAME");
+		const int export_sl_frame = export_sl_env ? atoi(export_sl_env) : 1;
 		if (skip < 2 && export_framenum == export_sl_frame) {
 			char sl_outdir[256];
 			snprintf(sl_outdir, sizeof(sl_outdir),
 				"C:\\Work\\nes1\\test\\mappy_out\\fceux_sl_dump_f%d", export_sl_frame);
-			FCEUX_ExportScanlineLevel(export_framenum, sl_outdir);
+			if (FCEUX_ScanlineTraceHasData()) {
+				FCEUX_WriteScanlineDumpStatus(export_framenum, sl_outdir, "valid", "ok");
+				FCEUX_ExportScanlineLevel(export_framenum, sl_outdir);
+			} else {
+				FCEUX_WriteScanlineDumpStatus(
+					export_framenum,
+					sl_outdir,
+					"unavailable",
+					"startup ppudead frame: FCEUX does not execute visible scanline tracing here");
+			}
 		}
 	}
 

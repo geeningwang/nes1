@@ -238,6 +238,7 @@ private:
 
 	int          cur_scanline;        // visible scanline being executed; -1 if outside window
 	unsigned int sl_cpu_cycle_base;   // cpu_ptr->cycle at the start of this scanline's CPU run
+	unsigned int frame_cpu_cycle_base; // cpu_ptr->cycle at begin_frame()
 
 	cpu_6502*    cpu_ptr;             // set by set_cpu(); nullptr until then
 };

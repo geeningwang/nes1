@@ -49,8 +49,36 @@ static bool               g_sl_trace_active = false;
 
 bool FCEUX_ScanlineTraceActive() { return g_sl_trace_active; }
 
-void FCEUX_EnableScanlineTrace()  { g_sl_trace_active = true; }
+void FCEUX_EnableScanlineTrace()  {
+    memset(g_sl_trace, 0, sizeof(g_sl_trace));
+    g_sl_trace_active = true;
+}
 void FCEUX_DisableScanlineTrace() { g_sl_trace_active = false; }
+
+bool FCEUX_ScanlineTraceHasData() {
+    for (int sl = 0; sl < 240; ++sl) {
+        const FCEUXScanlineTrace& e = g_sl_trace[sl];
+        if (e.cpu_cycles || e.cpu_pc || e.ppu_v || e.ppu_t || e.nt_write_cnt)
+            return true;
+    }
+    return false;
+}
+
+void FCEUX_WriteScanlineDumpStatus(int framenum, const char* outdir, const char* status, const char* reason)
+{
+#ifdef _WIN32
+    CreateDirectoryA(outdir, NULL);
+#endif
+    char path[512];
+    snprintf(path, sizeof(path), "%s\\scanline_dump_status.txt", outdir);
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "source=fceux\n");
+    fprintf(f, "frame=%d\n", framenum);
+    fprintf(f, "status=%s\n", status ? status : "");
+    fprintf(f, "reason=%s\n", reason ? reason : "");
+    fclose(f);
+}
 
 // Returns pointer to the 240-entry trace array (valid until next frame).
 const FCEUXScanlineTrace* FCEUX_GetScanlineTrace() { return g_sl_trace; }
