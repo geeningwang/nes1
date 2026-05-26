@@ -127,6 +127,9 @@ cpu_6502::cpu_6502()
 	rp = 0;
 	mem = new unsigned char[65536];
 	memset(mem, 0, 65536);
+	// FCEUX power-on RAM pattern: 00 00 00 00 FF FF FF FF, repeated.
+	for (int i = 0; i < 0x800; ++i)
+		mem[i] = (i & 0x04) ? 0xFF : 0x00;
 	cycle = 0;
 	ppu = nullptr;
 	apu = nullptr;
@@ -432,11 +435,7 @@ opcode opcode_items[] =
 void cpu_6502::reset()
 {
 	rpc = 0xc000;	// Trail run nestest.nes, starts from 0xc000
-	rp = 0x04;		// I_FLAG only — matches FCEUX (no bit 5); bit 5 is pushed as 0 on real HW reset
-
-	// See https://superuser.com/a/606770
-	STACK_PUSH_PC();  // Push PC to 0x100 and 0x1ff
-	STACK_PUSH(rp);   // Push P to 0x1fe and finally SP get 0xfd.
+	rp = 0x04;		// I_FLAG only - matches FCEUX (no bit 5)
 
 	rpc = *((unsigned short *)(mem + 0xfffc));
 	// Do NOT charge cycles here — FCEUX processes the reset vector fetch inside

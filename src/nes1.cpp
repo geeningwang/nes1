@@ -594,6 +594,9 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 		}
 	}
 
+	if (target_frame <= 2)
+		ppu.render(screen_buf);
+
 	ppu.export_scanline_level(target_frame, outdir, screen_buf);
 	printf("Scanline dump written to %s\\ (240 txt + 240 bmp)\n", outdir);
 
