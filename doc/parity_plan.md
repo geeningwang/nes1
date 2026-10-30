@@ -226,6 +226,9 @@ reproduces FCEUX's mid-line effects (catch-up at register accesses, tile pipelin
 Deviations from the plan as written: phase 2 (scheduling) did not need separate work beyond the budget rule
 (O-9); the PPU work was driven by rendering parity rather than the order in section 5.
 
+Scanline-level result (3000 frames, every one of the 240 scanlines of every frame, plus every frame and the instruction
+hash at each of those points): all 12 suite entries IDENTICAL (`tool/run_parity.ps1 -Frames 3000 -Level scanline`).
+
 ### Still open
 
 - **Phase 4 (APU)**: not started. nes1 has no frame-counter IRQ, no DMC and no `$4015` IRQ bits; the dump only
