@@ -210,3 +210,27 @@ Deviations from the plan as written:
   FCEUX stores stray bits there that no program can observe, and because this makes `nestest.log` usable as an
   independent reference (spec O-2).
 
+### Phases 1-3 - done for the repo ROMs (frame level, 3000 frames)
+
+All 12 suite entries (nestest from reset and with `--init-pc C000`, Mappy, color_test, and the 8 probe ROMs) are
+identical to FCEUX for 3000 frames at frame level, which includes the chained hash of every instruction (PC,
+opcode, registers, cycles, data bus, PPU latch). See [parity_spec.md](parity_spec.md) O-6 to O-24 for the behaviours
+that were found and the evidence.
+
+What was implemented in nes1 (clean-room, driven by the divergence loop): BRK, KIL and the remaining illegal
+opcodes; architectural P and the reset state; the open-bus memory map with work RAM; the data-bus and PPU I/O
+latch models; OAM write quirk, `$2004` reads, OAM DMA through `$2004`, OAMADDR reset at vblank; the CPU budget kept
+in PPU dots; V evolution; sprite overflow and pixel-accurate sprite-0 hit; and a lazy per-tile line renderer that
+reproduces FCEUX's mid-line effects (catch-up at register accesses, tile pipeline with write pointer).
+
+Deviations from the plan as written: phase 2 (scheduling) did not need separate work beyond the budget rule
+(O-9); the PPU work was driven by rendering parity rather than the order in section 5.
+
+### Still open
+
+- **Phase 4 (APU)**: not started. nes1 has no frame-counter IRQ, no DMC and no `$4015` IRQ bits; the dump only
+  compares the last value written to each APU register. ROMs that clear the I flag, use DMC or read `$4015` will diverge.
+- **Phase 5 (soak)**: scanline-level runs for all ROMs, and the instruction-level text trace comparison on chosen frames.
+- Unverified in nes1: the unstable illegal opcodes (`$8B`, `$AB`, `$93`, `$9B`, `$9C`, `$9E`, `$9F`), the other KIL
+  opcodes, `$6000-$7FFF` work-RAM extent, the exact `268` threshold of O-21, 8x16 sprites, left-column clipping.
+

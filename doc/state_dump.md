@@ -23,7 +23,7 @@ Scope: mapper 0 (NROM) ROMs, NTSC, no controller input (the pads are never press
 | `--pc-max N` | Maximum dumps per PC address (default 16). |
 | `--rom-every` | Include PRG in every dump (default: ROM written once to `rom.txt`). |
 | `--digest` | Write `digest.txt` (one line of hashes per event) instead of one file per event. Needed for long runs. |
-| `--trace-frames LIST` | Write `trace_fNNNNNN.txt`, one line per instruction, for these frames. |
+| `--trace-frames LIST` | Write `trace_fNNNNNN.txt`, one line per instruction, for these frames (columns `PC OP A X Y S P CYCLES SCANLINE DB PL`; `DB` and `PL` are the data-bus and PPU latches before the instruction). |
 | `--dump-insn LIST` | Full dump just before these global instruction numbers (1-based). |
 | `--init-pc ADDR` | Hex. Start at ADDR instead of the reset vector, with P=$24 and S=$FD (nestest: `C000`). |
 
@@ -79,6 +79,8 @@ PC=C06F A=00 X=5D Y=00 S=5F P=26 CYCLES=133103
 [PPU]
 CTRL=88 MASK=1E STATUS=40 OAMADDR=00
 V=2073 T=2000 FINEX=0 W=0 READBUF=00 MIRROR=V
+[BUS]
+DB=02 PPULATCH=00    CPU data-bus latch and PPU I/O latch (open-bus values)
 [APU] 4000-4017      last value written to each register
 [RAM] 0000-07FF      CPU RAM
 [NT] 2000-27FF       physical nametable RAM: page A (first 1 KB), page B (second 1 KB)
@@ -101,6 +103,7 @@ Notes on what is and is not compared:
 - `[PAL]` is canonical: `$3F10/14/18/1C` show the values of `$3F00/04/08/0C` and entries are masked to 6 bits.
 - `[NT]` is physical RAM, so it does not depend on how each emulator addresses the four logical nametables; `MIRROR` records which mirroring is active.
 - PRG and CHR are checked through the hash lines in every dump, and in full in `rom.txt` (or in every dump with `--rom-every`).
+- `[BUS]` holds the two latches that decide what reads of unmapped addresses and of write-only PPU registers return.
 - `P` is architectural (bit 5 = 1, bit 4 = 0). `[FB]` and the instruction hash are defined in [parity_spec.md](parity_spec.md).
 
 ## Comparing
@@ -118,6 +121,18 @@ each section (see [parity_spec.md](parity_spec.md), section 1.7). `compare_dumps
 folders and names the first differing event and fields. `tool/find_divergence.py` automates the whole drill-down
 (first differing frame, then scanline, then instruction trace, then field-level diff), and
 `tool/run_parity.ps1` runs it for all repo ROMs and probe ROMs. See [parity_plan.md](parity_plan.md).
+
+### Digest line
+
+```
+000123 scanline_f000005_s100.txt f=5 sl=100 pc=C06F cyc=133103 v=2073 st=40 ov=4,10,1,6 ALL=... CPU=... PPU=... BUS=... APU=... RAM=... NT=... PAL=... OAM=... CHR=... PRG=... FB=... INSN=hash/count
+```
+
+`v` and `st` (V register and PPU status) and `ov` (the CPU's overshoot in dots at the end of each of the line's four time slices, 256 + 6 + 63 + 16) are human-readable debugging aids; they are not part of any hash. The hashes cover the same bytes the full dump prints.
+
+### Debugging aid: `NESDBG`
+
+Both emulators print the catch-up positions of the line renderer to stderr when the environment variable `NESDBG=<frame>:<scanline>` is set during a dump run (`NES1 sync ...` / `FCEUX sync ...` lines with the position, the first unrendered tile, PPUMASK, PPUCTRL and fine X). Identical sequences mean the timing agrees and any difference is in what is drawn. This is how the mid-line rendering rules in [parity_spec.md](parity_spec.md) (O-19 to O-23) were found.
 
 ## Where the code is
 
