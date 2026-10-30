@@ -15,7 +15,7 @@ import os
 import re
 import sys
 
-HEX_SECTIONS = ("APU", "RAM", "NT", "PAL", "OAM", "CHR", "PRG")
+HEX_SECTIONS = ("APU", "RAM", "NT", "PAL", "OAM", "CHR", "FB", "PRG")
 
 
 def parse_dump(path):
@@ -48,7 +48,7 @@ def parse_dump(path):
                     k, _, v = tok.partition("=")
                     out[section][k] = v
                 continue
-            if "=" in line:  # PRG_CRC32=... / CHR_CRC32=...
+            if "=" in line:  # PRG_HASH=... / CHR_HASH=... / INSN_HASH=... / INSN_COUNT=...
                 k, _, v = line.partition("=")
                 out["CRC"][k] = v
     return out
@@ -68,6 +68,12 @@ def fmt_byte(v):
     return "--" if v is None else "%02X" % v
 
 
+def fmt_addr(sect, x):
+    if sect == "FB":
+        return "y=%d,x=%d" % (x >> 8, x & 0xFF)
+    return "%04X" % x
+
+
 def compare_event(pa, pb, wanted):
     """Return (report_lines, keys); keys are 'CPU.PC', 'RAM', ... that differ. Empty if identical."""
     A, B = parse_dump(pa), parse_dump(pb)
@@ -84,7 +90,7 @@ def compare_event(pa, pb, wanted):
         d = diff_bytes(A.get(sect, {}), B.get(sect, {}))
         if not d:
             continue
-        shown = ", ".join("%04X: %s/%s" % (x, fmt_byte(va), fmt_byte(vb)) for x, va, vb in d[:12])
+        shown = ", ".join("%s: %s/%s" % (fmt_addr(sect, x), fmt_byte(va), fmt_byte(vb)) for x, va, vb in d[:12])
         more = "" if len(d) <= 12 else "  ... +%d more" % (len(d) - 12)
         lines.append("    %-6s %d byte(s) differ (A/B): %s%s" % (sect, len(d), shown, more))
         keys.append(sect)
@@ -111,6 +117,60 @@ def read_run(d):
     return info
 
 
+DIGEST_FIELDS = ("CPU", "PPU", "APU", "RAM", "NT", "PAL", "OAM", "CHR", "PRG", "FB", "INSN")
+
+
+def read_digest(d):
+    """List of (name, {field: value, ...}) in file order."""
+    out = []
+    with open(os.path.join(d, "digest.txt")) as f:
+        for ln in f:
+            parts = ln.split()
+            if len(parts) < 3:
+                continue
+            kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+            out.append((parts[1], kv))
+    return out
+
+
+def compare_digests(args):
+    A, B = read_digest(args.dir_a), read_digest(args.dir_b)
+    print("digest events: A=%d B=%d" % (len(A), len(B)))
+    status = 0
+    first = None
+    by_field = {}
+    n = min(len(A), len(B))
+    for i in range(n):
+        na, ka = A[i]
+        nb, kb = B[i]
+        if na != nb:
+            print("event sequence differs at #%d: A=%s B=%s" % (i + 1, na, nb))
+            return 1
+        if ka.get("ALL") == kb.get("ALL"):
+            continue
+        fields = [k for k in DIGEST_FIELDS if ka.get(k) != kb.get(k)]
+        if first is None:
+            first = (i, na, ka, kb, fields)
+        for k in fields:
+            cnt, fe = by_field.get(k, (0, na))
+            by_field[k] = (cnt + 1, fe)
+    if len(A) != len(B):
+        print("event counts differ")
+        status = 1
+    if first is None:
+        if status == 0:
+            print("IDENTICAL (digest)")
+        return status
+    i, name, ka, kb, fields = first
+    print("FIRST DIVERGENCE: #%d %s  (frame %s scanline %s)" % (i + 1, name, ka.get("f"), ka.get("sl")))
+    print("  differing fields: %s" % ", ".join(fields))
+    print("  A: pc=%s cyc=%s   B: pc=%s cyc=%s" % (ka.get("pc"), ka.get("cyc"), kb.get("pc"), kb.get("cyc")))
+    print("\nSUMMARY (field -> differing events, first event):")
+    for k, (cnt, fe) in sorted(by_field.items(), key=lambda kv: -kv[1][0]):
+        print("  %-6s %7d  first: %s" % (k, cnt, fe))
+    return 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir_a")
@@ -127,6 +187,11 @@ def main():
             print("error: not a directory: %s" % d, file=sys.stderr)
             return 2
     wanted = {s.strip().upper() for s in args.sections.split(",") if s.strip()}
+
+    if os.path.exists(os.path.join(args.dir_a, "digest.txt")) and os.path.exists(os.path.join(args.dir_b, "digest.txt")):
+        print("A: %s" % args.dir_a)
+        print("B: %s" % args.dir_b)
+        return compare_digests(args)
 
     ra, rb = read_run(args.dir_a), read_run(args.dir_b)
     print("A: %s (%s)" % (args.dir_a, ra.get("emulator", "?")))

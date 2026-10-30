@@ -187,3 +187,26 @@ Exit: APU section identical at every event for the three ROMs, and CPU traces un
 4. DMC in the repo ROMs may never be exercised; APU parity is still implemented and proven with probe ROMs.
 5. If the divergence log shows a FCEUX behaviour that looks like an FCEUX bug, we still match it (FCEUX is
    the ground truth) and mark it in the spec.
+
+## 9. Progress log
+
+### Phase 0 - done
+
+Delivered: observation contract and first observed-behaviour entries ([parity_spec.md](parity_spec.md)); `[FB]`
+section; fast 64-bit hash and digest mode; per-instruction trace and chained instruction hash;
+`--dump-insn`, `--init-pc`; `compare_dumps.py` digest support, `find_divergence.py`, `check_nestest.py`;
+probe ROM generator and six probe ROMs; `run_parity.ps1`; baseline in [parity_baseline.md](parity_baseline.md).
+Exit criteria checked: suite runs end to end, both emulators emit the new sections, determinism, legacy modes.
+
+Deviations from the plan as written:
+
+- **p0-state:** the extra internal-state fields (PPU open-bus latch, IRQ lines, joypad shift state, CPU data-bus
+  latch, DMA state, APU internals) are *not* added yet. nes1 has no equivalent for most of them, so adding them now
+  would make every event differ from the first one and hide the real first divergence. Each field is added in the
+  phase that implements it (CPU/bus fields in phase 1, PPU fields in phase 3, APU in phase 4), together with its
+  spec entry.
+- **p0-compare:** the divergence tooling works on the VM where both emulators run; it is not packaged separately.
+- **Observation point for P:** the dump reports the architectural status register (bit 5 = 1, bit 4 = 0) because
+  FCEUX stores stray bits there that no program can observe, and because this makes `nestest.log` usable as an
+  independent reference (spec O-2).
+

@@ -22,6 +22,10 @@ Scope: mapper 0 (NROM) ROMs, NTSC, no controller input (the pads are never press
 | `--pc-frames LIST` | Frames in which PC triggers are armed (default: all). |
 | `--pc-max N` | Maximum dumps per PC address (default 16). |
 | `--rom-every` | Include PRG in every dump (default: ROM written once to `rom.txt`). |
+| `--digest` | Write `digest.txt` (one line of hashes per event) instead of one file per event. Needed for long runs. |
+| `--trace-frames LIST` | Write `trace_fNNNNNN.txt`, one line per instruction, for these frames. |
+| `--dump-insn LIST` | Full dump just before these global instruction numbers (1-based). |
+| `--init-pc ADDR` | Hex. Start at ADDR instead of the reset vector, with P=$24 and S=$FD (nestest: `C000`). |
 
 `LIST` is comma separated: `N`, `A-B`, `A-B/STEP` (every STEP-th value from A), or `all`. Frames are 1-based.
 
@@ -40,6 +44,7 @@ A bad option prints the usage text and exits with code 2. Dumps are about 43 KB 
 These are defined identically in both emulators:
 
 - **Frame numbering.** `frame` counts frames emulated since power-on, starting at 1. Frames 1 and 2 are the "ppudead" power-up frames (no vblank, no scanlines), exactly as in FCEUX.
+- **Instruction number** (`insn_nNNNNNNNNN.txt`): global count of instructions since power-on; the dump is taken at the same boundary as a PC trigger.
 - **End of frame** (`frame_fNNNNNN.txt`): the whole frame, including scanline 239, has been emulated. It is the same moment as the end of scanline 239.
 - **End of scanline** (`scanline_fNNNNNN_sSSS.txt`): all CPU and PPU work for visible scanline `S` (341 PPU dots) is finished. Only visible scanlines 0-239 are supported; vblank and the pre-render line are not split into scanlines in either emulator.
 - **PC trigger** (`pc_AAAA_nNNNN.txt`): the CPU is at an instruction boundary, about to fetch the opcode at `AAAA`. If an interrupt is pending it has already been taken, so a trigger on an NMI handler address fires at its first instruction. `nNNNN` is the 1-based hit number for that address.
@@ -49,7 +54,8 @@ These are defined identically in both emulators:
 
 ```
 rom.txt          PRG ($8000-$FFFF as the CPU sees it) and CHR (8 KB), written once
-events.txt       one line per dump, in the order they happened
+events.txt       one line per dump, in the order they happened (digest.txt instead, with --digest)
+trace_f000010.txt  with --trace-frames: every instruction of that frame
 run.txt          emulator name, full command line, frames run, event counts, PC hit counts
 frame_f000010.txt
 scanline_f000005_s100.txt
@@ -58,13 +64,13 @@ pc_C06F_n0001.txt
 
 `run.txt` is the only file that names the emulator; the dump files contain no emulator-specific text, so equal state gives byte-identical files.
 
-## Dump file format (`NESDUMP 1`)
+## Dump file format (`NESDUMP 2`)
 
 Plain text, `\n` line endings. Memory is printed 16 bytes per row as `ADDR: xx xx ...`, so a `diff` line identifies the address.
 
 ```
-NESDUMP 1
-event: scanline            frame | scanline | pc
+NESDUMP 2
+event: scanline            frame | scanline | pc | insn
 frame: 5
 scanline: 100
 pc_trigger: C06F hit=1     only in pc events
@@ -79,8 +85,11 @@ V=2073 T=2000 FINEX=0 W=0 READBUF=00 MIRROR=V
 [PAL] 3F00-3F1F
 [OAM] 0000-00FF
 [CHR] 0000-1FFF
-PRG_CRC32=XXXXXXXX
-CHR_CRC32=XXXXXXXX
+[FB]  0000-EFFF      256x240 palette-index pixels, 16 per row; unfinished rows are 00
+PRG_HASH=XXXXXXXXXXXXXXXX
+CHR_HASH=XXXXXXXXXXXXXXXX
+INSN_HASH=XXXXXXXXXXXXXXXX   chained hash of every instruction executed so far this frame
+INSN_COUNT=N
 END
 ```
 
@@ -91,7 +100,8 @@ Notes on what is and is not compared:
 - `[APU]` is a register shadow, not internal channel state (the two emulators model the APU differently). `$4014` and `$4016` are not shadowed and always read 00.
 - `[PAL]` is canonical: `$3F10/14/18/1C` show the values of `$3F00/04/08/0C` and entries are masked to 6 bits.
 - `[NT]` is physical RAM, so it does not depend on how each emulator addresses the four logical nametables; `MIRROR` records which mirroring is active.
-- PRG and CHR are checked through the CRC32 lines in every dump, and in full in `rom.txt` (or in every dump with `--rom-every`).
+- PRG and CHR are checked through the hash lines in every dump, and in full in `rom.txt` (or in every dump with `--rom-every`).
+- `P` is architectural (bit 5 = 1, bit 4 = 0). `[FB]` and the instruction hash are defined in [parity_spec.md](parity_spec.md).
 
 ## Comparing
 
@@ -101,6 +111,14 @@ python tool/compare_dumps.py <dirA> <dirB> [--max N] [--all] [--summary] [--sect
 
 Events are compared in the order of `events.txt`. The report names the first diverging event, then for each differing event lists the CPU/PPU fields (`A=... B=...`) and the memory addresses that differ (`ADDR: A/B`). `--summary` adds one line per field with the number of differing events and the first one. Exit status is 0 if identical, 1 if they differ, 2 on usage errors. Plain `diff -r dirA dirB` also works.
 
+## Digest mode and finding the first divergence
+
+Full dumps are about 230 KB each, so long runs use `--digest`: one text line per event with a 64-bit hash for
+each section (see [parity_spec.md](parity_spec.md), section 1.7). `compare_dumps.py` compares two digest
+folders and names the first differing event and fields. `tool/find_divergence.py` automates the whole drill-down
+(first differing frame, then scanline, then instruction trace, then field-level diff), and
+`tool/run_parity.ps1` runs it for all repo ROMs and probe ROMs. See [parity_plan.md](parity_plan.md).
+
 ## Where the code is
 
 | Piece | Location |
@@ -109,23 +127,14 @@ Events are compared in the order of `events.txt`. The report names the first div
 | nes1 side: state capture and hooks | `src/statedump.cpp`, `src/statedump.h`, hooks in `src/nes1.cpp` (`run_one_frame`, `run_dump_mode`), APU register shadow in `src/apu.cpp` |
 | FCEUX side: state capture | `tool/fceux-2.6.6/src/fceux_dump.cpp` |
 | FCEUX hooks | `x6502.cpp` (per instruction), `ppu.cpp` (`DoLine`, per scanline), `fceu.cpp` (`FCEUI_Emulate`, per frame), `sound.cpp` (APU shadow), `drivers/win/main.cpp` (`RunHeadlessDump`) |
-| Comparison tool | `tool/compare_dumps.py` |
+| Comparison tools | `tool/compare_dumps.py`, `tool/find_divergence.py`, `tool/check_nestest.py`, `tool/run_parity.ps1` |
+| Probe ROMs (tiny test programs, generated) | `tool/make_probe_rom.py` -> `test/probe/*.nes` |
 
 FCEUX's old hard-coded frame export (270 frames to `C:\Work\...`) is skipped while a `--dump` run is active.
 
 To change what is dumped, edit `nesdump::State` and `Recorder::write_event` in `common/nesdump.h` and fill the new field in both `statedump.cpp` and `fceux_dump.cpp`.
 
-## First comparison: Mappy (Japan), 120 frames
+## Current status
 
-Running the example above on both emulators (370 events: 120 frames, 240 scanlines of frame 5, 10 PC hits) gave:
-
-- Each emulator is deterministic: two runs of the same emulator are byte-identical.
-- The first three end-of-frame dumps (power-up frames and the first real frame) are identical.
-- Everything else differs, in these fields (events affected): `PPU.V` 362, `PPU.STATUS` 241, `CPU.PC` and `CPU.CYCLES` 77, `CPU.A` 7, `CPU.P` 5, `CPU.X` 2, `RAM` 2, `CPU.S` 1.
-- Nametables, palette, OAM, CHR/PRG CRCs and the APU register shadow matched in all 370 events (this ROM, these 120 frames only).
-
-What the dumps show (nothing here is fixed yet; causes beyond what the data shows are not investigated):
-
-1. **`V` register.** nes1 reports `2073` at every dumped point of frame 5, while FCEUX's value changes from scanline to scanline (`1000` at scanline 0, `5180` at 100, `0800` at 239). nes1 appears not to update `V` while rendering.
-2. **`STATUS` bits.** nes1 shows `40` (sprite-0 hit) where FCEUX shows `20` (sprite overflow) at the same points in frame 5.
-3. **Cycle drift at scanline ends.** At some scanline ends FCEUX is 2-3 cycles (one instruction) further on than nes1, for example scanline 0 of frame 5: nes1 stops at cycle 121736, FCEUX at 121738. A likely cause (a hypothesis, not tested) is that nes1 starts a new instruction only when at least one whole CPU cycle (3 PPU dots) of budget is left, while FCEUX starts one whenever any budget is left. The RAM, A, X, P and S differences first appear right after such a drift (scanlines 20-72 of frame 5), so they are probably consequences of it.
+The first comparison (Mappy, 120 frames) and the baseline of the parity suite are recorded in
+[parity_baseline.md](parity_baseline.md); progress against the plan is tracked in [parity_plan.md](parity_plan.md).

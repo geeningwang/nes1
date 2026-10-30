@@ -200,6 +200,17 @@ powershell -ExecutionPolicy Bypass -File tool\run_compare.ps1 `
 - The report is printed to the console: the first diverging event and a per-field summary. Use `-Max N` to also print the first N differing events in detail.
 - The exit code is 0 if the dumps are identical, 1 if they differ, and 2 if an emulator or a path failed.
 
+### Parity suite (all repo ROMs, automatic drill-down)
+
+For long runs build nes1 in **Release** (the hashing in `--digest` mode is slow in Debug):
+
+```powershell
+& $msbuild C:\work\nes1\src\nes1.sln /p:Configuration=Release /p:Platform=x64 /m /nologo /v:m
+powershell -ExecutionPolicy Bypass -File C:\work\nes1\tool\run_parity.ps1 -Frames 3000
+```
+
+`run_parity.ps1` runs `tool\find_divergence.py` for `nestest` (normal start and `--init-pc C000`), Mappy, color_test and the probe ROMs in `test\probe` (regenerate them with `python tool\make_probe_rom.py`). For each ROM it reports the first differing frame, scanline and instruction, and the differing fields. `-Level scanline` also compares every scanline of every frame; `-Only mappy` selects entries; `-TimeoutSec` limits one emulator run (a hung emulator is reported as an error). The exit code is 0 only if every ROM is identical. Check the CPU against the independent `nestest.log` with `tool\check_nestest.py`. The plan and current status are in [parity_plan.md](parity_plan.md) and [parity_baseline.md](parity_baseline.md).
+
 To run the steps by hand, or to compare folders from earlier runs:
 
 ```powershell
