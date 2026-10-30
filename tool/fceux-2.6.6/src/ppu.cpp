@@ -1334,6 +1334,7 @@ static void DoLine(void) {
 	if (MMC5Hack) MMC5_hb(scanline);
 
 	X6502_Run(256);
+	if (g_nesdump_active && dump_sl < 240) NesDump_SliceEnd(0);
 	EndRL();
 
 	if (!renderbg) {// User asked to not display background data.
@@ -1387,8 +1388,10 @@ static void DoLine(void) {
 		X6502_Run(85 - 16 - 10);
 	} else {
 		X6502_Run(6);	// Tried 65, caused problems with Slalom(maybe others)
+		if (g_nesdump_active && dump_sl < 240) NesDump_SliceEnd(1);
 		Fixit2();
 		X6502_Run(85 - 6 - 16);
+		if (g_nesdump_active && dump_sl < 240) NesDump_SliceEnd(2);
 
 		// A semi-hack for Star Trek: 25th Anniversary
 		if (GameHBIRQHook && (ScreenON || SpriteON) && ((PPU[0] & 0x38) != 0x18))
@@ -1411,7 +1414,7 @@ static void DoLine(void) {
 		ResetRL(XBuf + (scanline << 8));
 	}
 	X6502_Run(16);
-	if (g_nesdump_active && dump_sl < 240) NesDump_EndScanline(dump_sl);
+	if (g_nesdump_active && dump_sl < 240) { NesDump_SliceEnd(3); NesDump_EndScanline(dump_sl); }
 }
 
 #define V_FLIP  0x80

@@ -8,6 +8,8 @@
 extern cpu_6502 cpu;
 extern ppu_2c02 ppu;
 extern apu_2a03 apu;
+extern int g_ppu_budget;
+extern int g_line_ov[4];
 
 StateDumper* g_dumper = nullptr;
 
@@ -15,7 +17,7 @@ StateDumper* g_dumper = nullptr;
 struct NesDumpAccess {
 	static unsigned short pc() { return cpu.rpc; }
 	// --init-pc: the nestest start state (PC given, P=$24, S=$FD).
-	static void set_pc(unsigned short pc) { cpu.rpc = pc; cpu.rp = 0x24; cpu.rsp = 0xFD; }
+	static void set_pc(unsigned short pc) { cpu.rpc = pc; cpu.rp = 0x24; cpu.rsp = 0xFD; cpu.data_bus = 0; }
 
 	// The opcode at PC as the contract defines it: RAM mirrors for $0000-$1FFF, flat memory otherwise.
 	static unsigned char opcode()
@@ -28,6 +30,8 @@ struct NesDumpAccess {
 	{
 		i.pc = cpu.rpc;  i.op = opcode();
 		i.a = cpu.ra;  i.x = cpu.rx;  i.y = cpu.ry;  i.s = cpu.rsp;  i.p = cpu.rp;
+		i.db = cpu.data_bus;
+		i.pl = ppu.io_latch;
 		i.cycles = cpu.cycle;
 	}
 
@@ -37,6 +41,8 @@ struct NesDumpAccess {
 		s.a = cpu.ra;  s.x = cpu.rx;  s.y = cpu.ry;  s.s = cpu.rsp;  s.p = cpu.rp;
 		s.cycles = cpu.cycle;
 
+		for (int k = 0; k < 4; ++k) s.ov[k] = g_line_ov[k];
+		s.db = cpu.data_bus;  s.ppu_latch = ppu.io_latch;
 		s.ctrl = ppu.reg_ctrl;  s.mask = ppu.reg_mask;
 		s.status = ppu.reg_status;  s.oamaddr = ppu.reg_oam_addr;
 		s.v = ppu.v;  s.t = ppu.t;

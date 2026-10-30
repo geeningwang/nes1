@@ -290,6 +290,7 @@ done:
     PHP
     PLA
     STA $0301
+    SEI
     BRK
     .byte $00
     LDA #$11
@@ -304,6 +305,78 @@ irq:
     STA $0303
     RTI
 """ + vectors()),
+    # Every NOP variant, to observe what each leaves on the data bus (read the DB column of the trace).
+    "cpu_nop_modes": ("unofficial NOP addressing modes and the data bus", PREAMBLE + """
+    LDX #0
+    LDY #0
+    NOP
+    .byte $04, $04
+    NOP
+    .byte $44, $04
+    NOP
+    .byte $64, $04
+    NOP
+    .byte $0C, $04, $00
+    NOP
+    .byte $14, $04
+    NOP
+    .byte $34, $04
+    NOP
+    .byte $54, $04
+    NOP
+    .byte $74, $04
+    NOP
+    .byte $D4, $04
+    NOP
+    .byte $F4, $04
+    NOP
+    .byte $1C, $04, $00
+    NOP
+    .byte $3C, $04, $00
+    NOP
+    .byte $5C, $04, $00
+    NOP
+    .byte $7C, $04, $00
+    NOP
+    .byte $DC, $04, $00
+    NOP
+    .byte $FC, $04, $00
+    NOP
+    .byte $80, $04
+    NOP
+    .byte $82, $04
+    NOP
+    .byte $89, $04
+    NOP
+    .byte $C2, $04
+    NOP
+    .byte $E2, $04
+    NOP
+    .byte $1A
+    NOP
+    .byte $3A
+    NOP
+    .byte $5A
+    NOP
+    .byte $7A
+    NOP
+    .byte $DA
+    NOP
+    .byte $FA
+    NOP
+done:
+    JMP done
+""" + STUBS + vectors()),
+    # A KIL (JAM) opcode: observes what the CPU does when it halts.
+    "cpu_kil": ("KIL/JAM opcode $02", PREAMBLE + """
+    LDA #$77
+    STA $0300
+    .byte $02
+    LDA #$88
+    STA $0301
+done:
+    JMP done
+""" + STUBS + vectors()),
     # OAM DMA with a non-zero OAMADDR, then reads $2004 back.
     "oam_dma": ("OAM DMA cost and OAMADDR behaviour", PREAMBLE + wait_vbl(1) + """
     LDX #0
@@ -319,11 +392,27 @@ fill:
     LDA #$00
     STA $2003
     LDA $2004
-    STA $0300
+    STA $0400
     LDA #$10
     STA $2003
     LDA $2004
-    STA $0301
+    STA $0401
+    LDX #0
+fill3:
+    TXA
+    ORA #$80
+    STA $0300,X
+    INX
+    BNE fill3
+    LDA #3
+    STA $4014
+    LDA #$FD
+    STA $2003
+    LDA #$A1
+    STA $2004
+    STA $2004
+    STA $2004
+    STA $2004
 done:
     JMP done
 """ + STUBS + vectors()),

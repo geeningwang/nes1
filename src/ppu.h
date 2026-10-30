@@ -89,6 +89,12 @@ public:
 
 	// OAM DMA: copy 256 bytes of CPU page data into OAM
 	void oam_dma(unsigned char* page_data);
+	void write_oam_byte(unsigned char val);   // $2004 write
+
+	// Per-frame PPU address / status evolution (doc/parity_spec.md O-12, O-13).
+	void dot256_updates(int sl);        // visible scanline, dot 256: Y increment of V, sprite overflow
+	void copy_horizontal_bits();        // visible scanline, dot 262: V's horizontal bits <- T
+	void copy_t_to_v();                 // pre-render line, dot 325: V <- T
 
 	// Set/clear the vblank flag in PPUSTATUS
 	void set_vblank(bool vb);
@@ -147,12 +153,13 @@ private:
 	unsigned char  ppu_mem_read(unsigned short addr);
 	void           ppu_mem_write(unsigned short addr, unsigned char val);
 
-private:
-	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false, unsigned char* bg_opaque = nullptr);
-
+public:
 	// Palette-index copy of the rendered frame (one byte per pixel, as the state dump
 	// compares it with FCEUX).  Written by render_scanline() next to the BGRA pixels.
 	unsigned char fb_idx[SCREEN_WIDTH * SCREEN_HEIGHT];
+
+private:
+	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false, unsigned char* bg_opaque = nullptr);
 
 private:
 	unsigned char* mem;
@@ -163,6 +170,8 @@ private:
 	unsigned char reg_mask;      // $2001 PPUMASK  (write)
 	unsigned char reg_status;    // $2002 PPUSTATUS (read)
 	unsigned char reg_oam_addr;  // $2003 OAMADDR  (write)
+	unsigned char io_latch;      // PPU I/O latch: returned by reads of write-only registers
+	unsigned char oam_spl;       // OAM write counter ("sprite pointer low"), see doc/parity_spec.md O-10
 
 	// Internal Loopy registers
 	unsigned short v;        // current VRAM address (15-bit)

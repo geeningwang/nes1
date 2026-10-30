@@ -20,7 +20,7 @@ HEX_SECTIONS = ("APU", "RAM", "NT", "PAL", "OAM", "CHR", "FB", "PRG")
 
 def parse_dump(path):
     """Return {'header': {k: v}, 'CPU': {k: v}, 'PPU': {k: v}, 'APU'..: {addr: byte}, 'CRC': {k: v}}."""
-    out = {"header": {}, "CPU": {}, "PPU": {}, "CRC": {}}
+    out = {"header": {}, "CPU": {}, "PPU": {}, "BUS": {}, "CRC": {}}
     section = None
     with open(path, "r", newline="") as f:
         for raw in f:
@@ -43,7 +43,7 @@ def parse_dump(path):
                 k, _, v = line.partition(":")
                 out["header"][k.strip()] = v.strip()
                 continue
-            if section in ("CPU", "PPU"):
+            if section in ("CPU", "PPU", "BUS"):
                 for tok in line.split():
                     k, _, v = tok.partition("=")
                     out[section][k] = v
@@ -78,7 +78,7 @@ def compare_event(pa, pb, wanted):
     """Return (report_lines, keys); keys are 'CPU.PC', 'RAM', ... that differ. Empty if identical."""
     A, B = parse_dump(pa), parse_dump(pb)
     lines, keys = [], []
-    for sect in ("header", "CPU", "PPU", "CRC"):
+    for sect in ("header", "CPU", "PPU", "BUS", "CRC"):
         if wanted and sect not in wanted and sect != "header":
             continue
         for k, va, vb in diff_scalars(A[sect], B[sect]):
@@ -117,7 +117,7 @@ def read_run(d):
     return info
 
 
-DIGEST_FIELDS = ("CPU", "PPU", "APU", "RAM", "NT", "PAL", "OAM", "CHR", "PRG", "FB", "INSN")
+DIGEST_FIELDS = ("CPU", "PPU", "BUS", "APU", "RAM", "NT", "PAL", "OAM", "CHR", "PRG", "FB", "INSN")
 
 
 def read_digest(d):

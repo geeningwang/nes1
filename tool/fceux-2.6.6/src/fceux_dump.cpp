@@ -15,12 +15,14 @@
 extern uint8  PPU[4];
 extern uint8  NTARAM[0x800];
 extern uint8  PALRAM[0x20];
+extern uint8  UPALRAM[0x03];   // hidden $3F04/$3F08/$3F0C (PALRAM mirrors $3F00 there for rendering)
 extern uint8  SPRAM[0x100];
 extern uint32 RefreshAddr;
 extern uint32 TempAddr;
 extern uint8  XOffset;
 extern uint8  vtoggle;
 extern uint8  VRAMBuffer;
+extern uint8  PPUGenLatch;
 extern uint8 *vnapage[4];
 extern uint8 *RAM;
 extern uint64 timestampbase;
@@ -29,6 +31,8 @@ extern uint8 *XBuf;   // 256x256 palette-index frame buffer (video.cpp)
 int   g_nesdump_active   = 0;
 int   g_nesdump_insn_hook = 0;
 uint8 g_nesdump_apu[0x18] = { 0 };
+
+static int g_ov[4] = { 0, 0, 0, 0 };
 
 static nesdump::Config   g_cfg;
 static nesdump::Recorder g_rec;
@@ -66,6 +70,9 @@ static void fill(nesdump::State& s)
 	s.a = X.A;  s.x = X.X;  s.y = X.Y;  s.s = X.S;  s.p = X.P;
 	s.cycles = timestampbase + timestamp;
 
+	for (int k = 0; k < 4; ++k) s.ov[k] = g_ov[k];
+	s.db = X.DB;
+	s.ppu_latch = PPUGenLatch;
 	s.ctrl = PPU[0];  s.mask = PPU[1];  s.status = PPU[2];  s.oamaddr = PPU[3];
 	s.v = (uint16)RefreshAddr;  s.t = (uint16)TempAddr;
 	s.fine_x = XOffset;  s.w = vtoggle;  s.readbuf = VRAMBuffer;
@@ -74,7 +81,9 @@ static void fill(nesdump::State& s)
 	memcpy(s.apu, g_nesdump_apu, sizeof(s.apu));
 	if (RAM) memcpy(s.ram, RAM, 0x800);
 	memcpy(s.nt, NTARAM, 0x800);
+	// Architectural palette RAM: $3F04/$3F08/$3F0C are separate entries, kept in UPALRAM.
 	memcpy(s.pal, PALRAM, 0x20);
+	s.pal[0x04] = UPALRAM[0];  s.pal[0x08] = UPALRAM[1];  s.pal[0x0C] = UPALRAM[2];
 	memcpy(s.oam, SPRAM, 0x100);
 
 	for (uint32 a = 0x8000; a < 0x10000; ++a) {
@@ -125,6 +134,10 @@ void NesDump_EndFrame()
 
 void NesDump_BeginScanline(int sl) { g_scanline = sl; }
 
+// Called after each of the four X6502_Run() slices of a visible line; X.count is the leftover budget
+// in 1/16 dot (<= 0 after a run).
+void NesDump_SliceEnd(int k) { g_ov[k] = (int)(-(int32)X.count / 16); }
+
 void NesDump_EndScanline(int sl)
 {
 	g_scanline = sl;
@@ -144,7 +157,7 @@ void NesDump_Insn()
 {
 	nesdump::Insn i;
 	i.pc = (uint16_t)X.PC;  i.op = opcode_at(X.PC);
-	i.a = X.A;  i.x = X.X;  i.y = X.Y;  i.s = X.S;  i.p = X.P;
+	i.a = X.A;  i.x = X.X;  i.y = X.Y;  i.s = X.S;  i.p = X.P;  i.db = X.DB;  i.pl = PPUGenLatch;
 	i.cycles = timestampbase + timestamp;
 	i.frame = g_frame;
 	i.scanline = g_scanline;

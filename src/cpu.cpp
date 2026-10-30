@@ -95,11 +95,13 @@
 
 #define STACK_PUSH(r) \
 	*(mem + 0x100 + rsp) = (r); \
+	data_bus = *(mem + 0x100 + rsp); \
 	rsp--;
 
 #define STACK_POP(r) \
 	rsp ++; \
-	(r) = *(mem + 0x100 + rsp);
+	(r) = *(mem + 0x100 + rsp); \
+	data_bus = *(mem + 0x100 + rsp);
 
 #define STACK_PUSH_PC() \
 	STACK_PUSH(rpc >> 8); \
@@ -136,6 +138,7 @@ cpu_6502::cpu_6502()
 	joypad1_state = 0;
 	joypad1_strobe = false;
 	joypad1_shift = 0;
+	data_bus = 0;
 	pending_instruction_cycles = 0;
 }
 
@@ -188,39 +191,38 @@ unsigned char cpu_6502::get_mem_byte(unsigned short addr) const
 
 unsigned char cpu_6502::mem_read(unsigned short addr)
 {
-	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
-	if (addr < 0x2000)
-		return mem[addr & 0x07FF];
-	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
-	if (addr >= 0x2000 && addr <= 0x3FFF)
+	unsigned char v;
+	if (addr < 0x2000)                       // CPU RAM, mirrored every 2 KB
+		v = mem[addr & 0x07FF];
+	else if (addr < 0x4000)                  // PPU registers, mirrored every 8 bytes
+		v = ppu ? ppu->cpu_read(addr) : 0;
+	else if (addr == 0x4015)                 // APU status
+		v = apu ? apu->read_status() : 0;
+	else if (addr == 0x4016)                 // joypad 1: bits 5-7 are open bus (spec O-8)
 	{
-		if (ppu)
-			return ppu->cpu_read(addr);
-		return 0;
-	}
-	// Joypad 1
-	if (addr == 0x4016)
-	{
+		unsigned char bit;
 		if (joypad1_strobe)
-			return joypad1_state & 1;  // A button continuously during strobe
-		unsigned char bit = joypad1_shift & 1;
-		joypad1_shift >>= 1;
-		return bit;
+			bit = joypad1_state & 1;         // A button continuously during strobe
+		else
+		{
+			bit = joypad1_shift & 1;
+			joypad1_shift >>= 1;
+		}
+		v = (unsigned char)((data_bus & 0xE0) | bit);
 	}
-	// APU status
-	if (addr == 0x4015)
-	{
-		if (apu) return apu->read_status();
-		return 0;
-	}
-	// Joypad 2 (not connected)
-	if (addr == 0x4017)
-		return 0;
-	return mem[addr];
+	else if (addr == 0x4017)                 // joypad 2 (not connected)
+		v = (unsigned char)(data_bus & 0xE0);
+	else if (addr >= 0x6000)                 // $6000-$7FFF work RAM, $8000-$FFFF PRG ROM
+		v = mem[addr];
+	else                                     // $4000-$4014, $4018-$5FFF: nothing drives the bus
+		v = data_bus;
+	data_bus = v;
+	return v;
 }
 
 void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 {
+	data_bus = val;
 	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
 	if (addr < 0x2000)
 	{
@@ -228,7 +230,7 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 		return;
 	}
 	// PPU registers: $2000-$2007 mirrored throughout $2000-$3FFF
-	if (addr >= 0x2000 && addr <= 0x3FFF)
+	if (addr <= 0x3FFF)
 	{
 		if (ppu)
 			ppu->cpu_write(addr, val);
@@ -258,7 +260,9 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 		joypad1_strobe = new_strobe;
 		return;
 	}
-	mem[addr] = val;
+	// $6000-$7FFF work RAM; writes to PRG ROM ($8000-$FFFF) and unmapped space are ignored
+	if (addr >= 0x6000 && addr < 0x8000)
+		mem[addr] = val;
 }
 
 #define UNK 0
@@ -328,13 +332,25 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 #define SRLA 64
 #define SSRE 65
 #define SRRA 66
+#define SKIL 67
+#define SANC 68
+#define SALR 69
+#define SARR 70
+#define SXAA 71
+#define SATX 72
+#define SAXS 73
+#define SLAS 74
+#define SAHX 75
+#define STAS 76
+#define SSHY 77
+#define SSHX 78
 
 char instruction_name[][5] = {
 	" ???", " ADC", " AND", " ASL", " BCC", " BCS", " BEQ", " BIT", " BMI", " BNE", " BPL", " BRK", " BVC", " BVS", " CLC", " CLD",
 	" CLI", " CLV", " CMP", " CPX", " CPY", " DEC", " DEX", " DEY", " EOR", " INC", " INX", " INY", " JMP", " JSR", " LDA", " LDX",
 	" LDY", " LSR", " NOP", " ORA", " PHA", " PHP", " PLA", " PLP", " ROL", " ROR", " RTI", " RTS", " SBC", " SEC", " SED", " SEI",
 	" STA", " STX", " STY", " TAX", " TAY", " TSX", " TXA", " TXS", " TYA", "*NOP", "*LAX", "*SAX", "*SBC", "*DCP", "*ISB", "*SLO",
-	"*RLA", "*SRE", "*RRA"
+	"*RLA", "*SRE", "*RRA", "*KIL", "*ANC", "*ALR", "*ARR", "*XAA", "*ATX", "*AXS", "*LAS", "*AHX", "*TAS", "*SHY", "*SHX"
 };
 
 #define ADDR_NONE			0
@@ -367,78 +383,48 @@ struct opcode
 
 opcode opcode_items[] = 
 {
-	// 0x00
-	{ BRK, 1, ADDR_IMPLICIT, 7, 0 },{ ORA, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SSLO, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ ORA, 2, ADDR_ZERO_PAGE, 3, 0 },{ ASL, 2, ADDR_ZERO_PAGE, 5, 0 },{ SSLO, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0x08
-	{ PHP, 1, ADDR_IMPLICIT, 3, 0 },{ ORA, 2, ADDR_IMMEDIATE, 2, 0 },{ ASL, 1, ADDR_ACCUMULATOR, 2, 0 },{},{ SNOP, 3, ADDR_ABSOLUTE, 4, 0 },{ ORA, 3, ADDR_ABSOLUTE, 4, 0 },{ ASL, 3, ADDR_ABSOLUTE, 6, 0 },{ SSLO, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0x10
-	{ BPL, 2, ADDR_RELATIVE, 2, 2 },{ ORA, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SSLO, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ORA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ASL, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SSLO, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0x18
-	{ CLC, 1, ADDR_IMPLICIT, 2, 0 },{ ORA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SSLO, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ORA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ASL, 3, ADDR_ABSOLUTE_X, 7, 0 }, { SSLO, 3, ADDR_ABSOLUTE_X, 7, 0 },
-	// 0x20
-	{ JSR, 3, ADDR_JMP_ABSOLUTE, 6, 0 },{ AND, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SRLA, 2, ADDR_INDIRECT_X, 8, 0 },{ BIT, 2, ADDR_ZERO_PAGE, 3, 0 },{ AND, 2, ADDR_ZERO_PAGE, 3, 0 },{ ROL, 2, ADDR_ZERO_PAGE, 5, 0 },{ SRLA, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0x28
-	{ PLP, 1, ADDR_IMPLICIT, 4, 0 },{ AND, 2, ADDR_IMMEDIATE, 2, 0 },{ ROL, 1, ADDR_ACCUMULATOR, 2, 0 },{},{ BIT, 3, ADDR_ABSOLUTE, 4, 0 },{ AND, 3, ADDR_ABSOLUTE, 4, 0 },{ ROL, 3, ADDR_ABSOLUTE, 6, 0 },{ SRLA, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0x30
-	{ BMI, 2, ADDR_RELATIVE, 2, 2 },{ AND, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SRLA, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ AND, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ROL, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SRLA, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0x38
+	{ BRK, 1, ADDR_IMPLICIT, 7, 0 },{ ORA, 2, ADDR_INDIRECT_X, 6, 0 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SSLO, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ ORA, 2, ADDR_ZERO_PAGE, 3, 0 },{ ASL, 2, ADDR_ZERO_PAGE, 5, 0 },{ SSLO, 2, ADDR_ZERO_PAGE, 5, 0 },
+	{ PHP, 1, ADDR_IMPLICIT, 3, 0 },{ ORA, 2, ADDR_IMMEDIATE, 2, 0 },{ ASL, 1, ADDR_ACCUMULATOR, 2, 0 },{ SANC, 2, ADDR_IMMEDIATE, 2, 0 },{ SNOP, 3, ADDR_ABSOLUTE, 4, 0 },{ ORA, 3, ADDR_ABSOLUTE, 4, 0 },{ ASL, 3, ADDR_ABSOLUTE, 6, 0 },{ SSLO, 3, ADDR_ABSOLUTE, 6, 0 },
+	{ BPL, 2, ADDR_RELATIVE, 2, 2 },{ ORA, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SSLO, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ORA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ASL, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SSLO, 2, ADDR_ZERO_PAGE_X, 6, 0 },
+	{ CLC, 1, ADDR_IMPLICIT, 2, 0 },{ ORA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SSLO, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ORA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ASL, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SSLO, 3, ADDR_ABSOLUTE_X, 7, 0 },
+	{ JSR, 3, ADDR_JMP_ABSOLUTE, 6, 0 },{ AND, 2, ADDR_INDIRECT_X, 6, 0 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SRLA, 2, ADDR_INDIRECT_X, 8, 0 },{ BIT, 2, ADDR_ZERO_PAGE, 3, 0 },{ AND, 2, ADDR_ZERO_PAGE, 3, 0 },{ ROL, 2, ADDR_ZERO_PAGE, 5, 0 },{ SRLA, 2, ADDR_ZERO_PAGE, 5, 0 },
+	{ PLP, 1, ADDR_IMPLICIT, 4, 0 },{ AND, 2, ADDR_IMMEDIATE, 2, 0 },{ ROL, 1, ADDR_ACCUMULATOR, 2, 0 },{ SANC, 2, ADDR_IMMEDIATE, 2, 0 },{ BIT, 3, ADDR_ABSOLUTE, 4, 0 },{ AND, 3, ADDR_ABSOLUTE, 4, 0 },{ ROL, 3, ADDR_ABSOLUTE, 6, 0 },{ SRLA, 3, ADDR_ABSOLUTE, 6, 0 },
+	{ BMI, 2, ADDR_RELATIVE, 2, 2 },{ AND, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SRLA, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ AND, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ROL, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SRLA, 2, ADDR_ZERO_PAGE_X, 6, 0 },
 	{ SEC, 1, ADDR_IMPLICIT, 2, 0 },{ AND, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SRLA, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ AND, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ROL, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SRLA, 3, ADDR_ABSOLUTE_X, 7, 0 },
-	// 0x40
-	{ RTI, 1, ADDR_IMPLICIT, 6, 0 },{ EOR, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SSRE, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ EOR, 2, ADDR_ZERO_PAGE, 3, 0 },{ LSR, 2, ADDR_ZERO_PAGE, 5, 0 },{ SSRE, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0x48
-	{ PHA, 1, ADDR_IMPLICIT, 3, 0 },{ EOR, 2, ADDR_IMMEDIATE, 2, 0 },{ LSR, 1, ADDR_ACCUMULATOR, 2, 0 },{},{ JMP, 3, ADDR_JMP_ABSOLUTE, 3, 0 },{ EOR, 3, ADDR_ABSOLUTE, 4, 0 },{ LSR, 3, ADDR_ABSOLUTE, 6, 0 },{ SSRE, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0x50
-	{ BVC, 2, ADDR_RELATIVE, 2, 2 },{ EOR, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SSRE, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ EOR, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LSR, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SSRE, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0x58
+	{ RTI, 1, ADDR_IMPLICIT, 6, 0 },{ EOR, 2, ADDR_INDIRECT_X, 6, 0 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SSRE, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ EOR, 2, ADDR_ZERO_PAGE, 3, 0 },{ LSR, 2, ADDR_ZERO_PAGE, 5, 0 },{ SSRE, 2, ADDR_ZERO_PAGE, 5, 0 },
+	{ PHA, 1, ADDR_IMPLICIT, 3, 0 },{ EOR, 2, ADDR_IMMEDIATE, 2, 0 },{ LSR, 1, ADDR_ACCUMULATOR, 2, 0 },{ SALR, 2, ADDR_IMMEDIATE, 2, 0 },{ JMP, 3, ADDR_JMP_ABSOLUTE, 3, 0 },{ EOR, 3, ADDR_ABSOLUTE, 4, 0 },{ LSR, 3, ADDR_ABSOLUTE, 6, 0 },{ SSRE, 3, ADDR_ABSOLUTE, 6, 0 },
+	{ BVC, 2, ADDR_RELATIVE, 2, 2 },{ EOR, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SSRE, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ EOR, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LSR, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SSRE, 2, ADDR_ZERO_PAGE_X, 6, 0 },
 	{ CLI, 1, ADDR_IMPLICIT, 2, 0 },{ EOR, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SSRE, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ EOR, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LSR, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SSRE, 3, ADDR_ABSOLUTE_X, 7, 0 },
-	// 0x60
-	{ RTS, 1, ADDR_IMPLICIT, 6, 0 },{ ADC, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SRRA, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ ADC, 2, ADDR_ZERO_PAGE, 3, 0 },{ ROR, 2, ADDR_ZERO_PAGE, 5, 0 },{ SRRA, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0x68
-	{ PLA, 1, ADDR_IMPLICIT, 4, 0 },{ ADC, 2, ADDR_IMMEDIATE, 2, 0 },{ ROR, 1, ADDR_ACCUMULATOR, 2, 0 },{},{ JMP, 3, ADDR_JMP_INDIRECT, 5, 0 },{ ADC, 3, ADDR_ABSOLUTE, 4, 0 },{ ROR, 3, ADDR_ABSOLUTE, 6, 0 },{ SRRA, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0x70
-	{ BVS, 2, ADDR_RELATIVE, 2, 2 },{ ADC, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SRRA, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ADC, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ROR, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SRRA, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0x78
+	{ RTS, 1, ADDR_IMPLICIT, 6, 0 },{ ADC, 2, ADDR_INDIRECT_X, 6, 0 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SRRA, 2, ADDR_INDIRECT_X, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE, 3, 0 },{ ADC, 2, ADDR_ZERO_PAGE, 3, 0 },{ ROR, 2, ADDR_ZERO_PAGE, 5, 0 },{ SRRA, 2, ADDR_ZERO_PAGE, 5, 0 },
+	{ PLA, 1, ADDR_IMPLICIT, 4, 0 },{ ADC, 2, ADDR_IMMEDIATE, 2, 0 },{ ROR, 1, ADDR_ACCUMULATOR, 2, 0 },{ SARR, 2, ADDR_IMMEDIATE, 2, 0 },{ JMP, 3, ADDR_JMP_INDIRECT, 5, 0 },{ ADC, 3, ADDR_ABSOLUTE, 4, 0 },{ ROR, 3, ADDR_ABSOLUTE, 6, 0 },{ SRRA, 3, ADDR_ABSOLUTE, 6, 0 },
+	{ BVS, 2, ADDR_RELATIVE, 2, 2 },{ ADC, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SRRA, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ADC, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ ROR, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SRRA, 2, ADDR_ZERO_PAGE_X, 6, 0 },
 	{ SEI, 1, ADDR_IMPLICIT, 2, 0 },{ ADC, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SRRA, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ADC, 3, ADDR_ABSOLUTE_X, 4, 1 },{ ROR, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SRRA, 3, ADDR_ABSOLUTE_X, 7, 0 },
-	// 0x80
-	{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ STA, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SSAX, 2, ADDR_INDIRECT_X, 6, 0 },{ STY, 2, ADDR_ZERO_PAGE, 3, 0 },{ STA, 2, ADDR_ZERO_PAGE, 3, 0 },{ STX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SSAX, 2, ADDR_ZERO_PAGE, 3, 0 },
-	// 0x88
-	{ DEY, 1, ADDR_IMPLICIT, 2, 0 },{},{ TXA, 1, ADDR_IMPLICIT, 2, 0 },{},{ STY, 3, ADDR_ABSOLUTE, 4, 0 },{ STA, 3, ADDR_ABSOLUTE, 4, 0 },{ STX, 3, ADDR_ABSOLUTE, 4, 0 },{ SSAX, 3, ADDR_ABSOLUTE, 4, 0 },
-	// 0x90
-	{ BCC, 2, ADDR_RELATIVE, 2, 2 },{ STA, 2, ADDR_INDIRECT_Y, 6, 0 },{},{},{ STY, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ STA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ STX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },{ SSAX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },
-	// 0x98
-	{ TYA, 1, ADDR_IMPLICIT, 2, 0 },{ STA, 3, ADDR_ABSOLUTE_Y, 5, 0 },{ TXS, 1, ADDR_IMPLICIT, 2, 0 },{},{},{ STA, 3, ADDR_ABSOLUTE_X, 5, 0 },{},{},
-	// 0xa0
+	{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ STA, 2, ADDR_INDIRECT_X, 6, 0 },{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ SSAX, 2, ADDR_INDIRECT_X, 6, 0 },{ STY, 2, ADDR_ZERO_PAGE, 3, 0 },{ STA, 2, ADDR_ZERO_PAGE, 3, 0 },{ STX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SSAX, 2, ADDR_ZERO_PAGE, 3, 0 },
+	{ DEY, 1, ADDR_IMPLICIT, 2, 0 },{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ TXA, 1, ADDR_IMPLICIT, 2, 0 },{ SXAA, 2, ADDR_IMMEDIATE, 2, 0 },{ STY, 3, ADDR_ABSOLUTE, 4, 0 },{ STA, 3, ADDR_ABSOLUTE, 4, 0 },{ STX, 3, ADDR_ABSOLUTE, 4, 0 },{ SSAX, 3, ADDR_ABSOLUTE, 4, 0 },
+	{ BCC, 2, ADDR_RELATIVE, 2, 2 },{ STA, 2, ADDR_INDIRECT_Y, 6, 0 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SAHX, 2, ADDR_INDIRECT_Y, 6, 0 },{ STY, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ STA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ STX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },{ SSAX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },
+	{ TYA, 1, ADDR_IMPLICIT, 2, 0 },{ STA, 3, ADDR_ABSOLUTE_Y, 5, 0 },{ TXS, 1, ADDR_IMPLICIT, 2, 0 },{ STAS, 3, ADDR_ABSOLUTE_Y, 5, 0 },{ SSHY, 3, ADDR_ABSOLUTE_X, 5, 0 },{ STA, 3, ADDR_ABSOLUTE_X, 5, 0 },{ SSHX, 3, ADDR_ABSOLUTE_Y, 5, 0 },{ SAHX, 3, ADDR_ABSOLUTE_Y, 5, 0 },
 	{ LDY, 2, ADDR_IMMEDIATE, 2, 0 },{ LDA, 2, ADDR_INDIRECT_X, 6, 0 },{ LDX, 2, ADDR_IMMEDIATE, 2, 0 },{ SLAX, 2, ADDR_INDIRECT_X, 6, 0 },{ LDY, 2, ADDR_ZERO_PAGE, 3, 0 },{ LDA, 2, ADDR_ZERO_PAGE, 3, 0 },{ LDX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SLAX, 2, ADDR_ZERO_PAGE, 3, 0 },
-	// 0xa8
-	{ TAY, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 2, ADDR_IMMEDIATE, 2, 0 },{ TAX, 1, ADDR_IMPLICIT, 2, 0 },{},{ LDY, 3, ADDR_ABSOLUTE, 4, 0 },{ LDA, 3, ADDR_ABSOLUTE, 4, 0 },{ LDX, 3, ADDR_ABSOLUTE, 4, 0 },{ SLAX, 3, ADDR_ABSOLUTE, 4, 0 },
-	// 0xb0
-	{ BCS, 2, ADDR_RELATIVE, 2, 2 },{ LDA, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SLAX, 2, ADDR_INDIRECT_Y, 5, 1 },{ LDY, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },{ SLAX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },
-	// 0xb8
-	{ CLV, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ TSX, 1, ADDR_IMPLICIT, 2, 0 },{},{ LDY, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDX, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SLAX, 3, ADDR_ABSOLUTE_Y, 4, 1 },
-	// 0xc0
-	{ CPY, 2, ADDR_IMMEDIATE, 2, 0 },{ CMP, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SDCP, 2, ADDR_INDIRECT_X, 8, 0 },{ CPY, 2, ADDR_ZERO_PAGE, 3, 0 },{ CMP, 2, ADDR_ZERO_PAGE, 3, 0 },{ DEC, 2, ADDR_ZERO_PAGE, 5, 0 },{ SDCP, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0xc8
-	{ INY, 1, ADDR_IMPLICIT, 2, 0 },{ CMP, 2, ADDR_IMMEDIATE, 2, 0 },{ DEX, 1, ADDR_IMPLICIT, 2, 0 },{},{ CPY, 3, ADDR_ABSOLUTE, 4, 0 },{ CMP, 3, ADDR_ABSOLUTE, 4, 0 },{ DEC, 3, ADDR_ABSOLUTE, 6, 0 },{ SDCP, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0xd0
-	{ BNE, 2, ADDR_RELATIVE, 2, 2 },{ CMP, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SDCP, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ CMP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ DEC, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SDCP, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0xd8
+	{ TAY, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 2, ADDR_IMMEDIATE, 2, 0 },{ TAX, 1, ADDR_IMPLICIT, 2, 0 },{ SATX, 2, ADDR_IMMEDIATE, 2, 0 },{ LDY, 3, ADDR_ABSOLUTE, 4, 0 },{ LDA, 3, ADDR_ABSOLUTE, 4, 0 },{ LDX, 3, ADDR_ABSOLUTE, 4, 0 },{ SLAX, 3, ADDR_ABSOLUTE, 4, 0 },
+	{ BCS, 2, ADDR_RELATIVE, 2, 2 },{ LDA, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SLAX, 2, ADDR_INDIRECT_Y, 5, 1 },{ LDY, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },{ SLAX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },
+	{ CLV, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ TSX, 1, ADDR_IMPLICIT, 2, 0 },{ SLAS, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ LDY, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDX, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SLAX, 3, ADDR_ABSOLUTE_Y, 4, 1 },
+	{ CPY, 2, ADDR_IMMEDIATE, 2, 0 },{ CMP, 2, ADDR_INDIRECT_X, 6, 0 },{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ SDCP, 2, ADDR_INDIRECT_X, 8, 0 },{ CPY, 2, ADDR_ZERO_PAGE, 3, 0 },{ CMP, 2, ADDR_ZERO_PAGE, 3, 0 },{ DEC, 2, ADDR_ZERO_PAGE, 5, 0 },{ SDCP, 2, ADDR_ZERO_PAGE, 5, 0 },
+	{ INY, 1, ADDR_IMPLICIT, 2, 0 },{ CMP, 2, ADDR_IMMEDIATE, 2, 0 },{ DEX, 1, ADDR_IMPLICIT, 2, 0 },{ SAXS, 2, ADDR_IMMEDIATE, 2, 0 },{ CPY, 3, ADDR_ABSOLUTE, 4, 0 },{ CMP, 3, ADDR_ABSOLUTE, 4, 0 },{ DEC, 3, ADDR_ABSOLUTE, 6, 0 },{ SDCP, 3, ADDR_ABSOLUTE, 6, 0 },
+	{ BNE, 2, ADDR_RELATIVE, 2, 2 },{ CMP, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SDCP, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ CMP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ DEC, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SDCP, 2, ADDR_ZERO_PAGE_X, 6, 0 },
 	{ CLD, 1, ADDR_IMPLICIT, 2, 0 },{ CMP, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SDCP, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ CMP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ DEC, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SDCP, 3, ADDR_ABSOLUTE_X, 7, 0 },
-	// 0xe0
-	{ CPX, 2, ADDR_IMMEDIATE, 2, 0 },{ SBC, 2, ADDR_INDIRECT_X, 6, 0 },{},{ SISB, 2, ADDR_INDIRECT_X, 8, 0 },{ CPX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SBC, 2, ADDR_ZERO_PAGE, 3, 0 },{ INC, 2, ADDR_ZERO_PAGE, 5, 0 },{ SISB, 2, ADDR_ZERO_PAGE, 5, 0 },
-	// 0xe8
+	{ CPX, 2, ADDR_IMMEDIATE, 2, 0 },{ SBC, 2, ADDR_INDIRECT_X, 6, 0 },{ SNOP, 2, ADDR_IMMEDIATE, 3, 0 },{ SISB, 2, ADDR_INDIRECT_X, 8, 0 },{ CPX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SBC, 2, ADDR_ZERO_PAGE, 3, 0 },{ INC, 2, ADDR_ZERO_PAGE, 5, 0 },{ SISB, 2, ADDR_ZERO_PAGE, 5, 0 },
 	{ INX, 1, ADDR_IMPLICIT, 2, 0 },{ SBC, 2, ADDR_IMMEDIATE, 2, 0 },{ NOP, 1, ADDR_IMPLICIT, 2, 0 },{ SSBC, 2, ADDR_IMMEDIATE, 2, 0 },{ CPX, 3, ADDR_ABSOLUTE, 4, 0 },{ SBC, 3, ADDR_ABSOLUTE, 4, 0 },{ INC, 3, ADDR_ABSOLUTE, 6, 0 },{ SISB, 3, ADDR_ABSOLUTE, 6, 0 },
-	// 0xf0
-	{ BEQ, 2, ADDR_RELATIVE, 2, 2 },{ SBC, 2, ADDR_INDIRECT_Y, 5, 1 },{},{ SISB, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ SBC, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ INC, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SISB, 2, ADDR_ZERO_PAGE_X, 6, 0 },
-	// 0xf8
+	{ BEQ, 2, ADDR_RELATIVE, 2, 2 },{ SBC, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SISB, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ SBC, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ INC, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SISB, 2, ADDR_ZERO_PAGE_X, 6, 0 },
 	{ SED, 1, ADDR_IMPLICIT, 2, 0 },{ SBC, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SNOP, 1, ADDR_IMPLICIT, 2, 0 },{ SISB, 3, ADDR_ABSOLUTE_Y, 7, 0 },{ SNOP, 3, ADDR_ABSOLUTE_X, 4, 1 },{ SBC, 3, ADDR_ABSOLUTE_X, 4, 1 },{ INC, 3, ADDR_ABSOLUTE_X, 7, 0 },{ SISB, 3, ADDR_ABSOLUTE_X, 7, 0 },
 };
 
 void cpu_6502::reset()
 {
 	rpc = 0xc000;	// Trail run nestest.nes, starts from 0xc000
-	rp = 0x04;		// I_FLAG only - matches FCEUX (no bit 5)
+	rp = 0x24;		// P is kept architectural: bit 5 always 1, bit 4 never stored (spec O-2)
+	rsp = 0xFD;		// FCEUX has S=$FD at the first instruction (spec O-3)
 
 	rpc = *((unsigned short *)(mem + 0xfffc));
+	data_bus = (unsigned char)(rpc >> 8);   // the reset vector's high byte was the last byte read (spec O-14)
 	// Do NOT charge cycles here — FCEUX processes the reset vector fetch inside
 	// X6502_Run() at zero extra cost, so cycle 0 is the first instruction.
 	pending_instruction_cycles = 0;
@@ -537,7 +523,7 @@ bool cpu_6502::step(bool log)
 	}
 	}  // end if (log)
 
-	if (instruction == UNK || instruction == BRK)
+	if (instruction == UNK)
 	{
 		if (log)
 		{
@@ -551,6 +537,9 @@ bool cpu_6502::step(bool log)
 		return false;
 	}
 
+	// The last byte fetched for this instruction is on the data bus before any data access.
+	data_bus = *(mem + (unsigned short)(rpc + (instruction_size > 0 ? instruction_size - 1 : 0)));
+
 	// Fetch data
 	unsigned char temp = 0;
 	unsigned short temp_rpc = 0;
@@ -559,7 +548,8 @@ bool cpu_6502::step(bool log)
 
 	// Pure store instructions must not read from the destination address —
 	// reading PPU registers ($2007 etc.) has side effects (e.g. increments v).
-	bool store_only = (instruction == STA || instruction == STX || instruction == STY || instruction == SSAX);
+	bool store_only = (instruction == STA || instruction == STX || instruction == STY || instruction == SSAX ||
+	                   instruction == SAHX || instruction == STAS || instruction == SSHY || instruction == SSHX);
 
 	switch (addressing_mode)
 	{
@@ -625,6 +615,19 @@ bool cpu_6502::step(bool log)
 
 	rpc += instruction_size;
 	pending_instruction_cycles = (unsigned char)instruction_cycles;
+	if (instruction_size > 0 && !store_only)
+	{
+		switch (addressing_mode)
+		{
+		case ADDR_ZERO_PAGE:
+		case ADDR_ZERO_PAGE_X:
+		case ADDR_ZERO_PAGE_Y:
+			data_bus = temp;   // direct zero-page reads do not go through mem_read()
+			break;
+		default:
+			break;
+		}
+	}
 
 	// Operation
 	bool store = false;
@@ -720,8 +723,13 @@ bool cpu_6502::step(bool log)
 				instruction_cycles += BRANCH_NEW_PAGE_EXTRA_CYCLE;
 		}
 		break;
-		//case BRK:
-			// BRK is not processed now. Use default (error) branch.
+	case BRK:
+		rpc++;  // the byte after BRK is skipped: the pushed return address is BRK + 2
+		STACK_PUSH_PC();
+		STACK_PUSH(rp | 0x10);  // B and bit 5 are set in the pushed copy (spec O-6)
+		SET_INTERRUPT(1);
+		rpc = *((unsigned short*)(mem + 0xFFFE));
+		break;
 	case BVC:
 		if (GET_OVERFLOW() == 0)
 		{
@@ -957,6 +965,77 @@ bool cpu_6502::step(bool log)
 		break;
 	case SNOP:
 		break;
+	case SKIL:
+		break;  // the CPU stays on the opcode; the 257-cycle cost per repeat is in the table (spec O-7)
+	case SANC:
+		ra = ra & temp;
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		SET_CARRY(ra >> 7);
+		break;
+	case SALR:
+		ra = ra & temp;
+		SET_CARRY(ra & 0x01);
+		ra = ra >> 1;
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		break;
+	case SARR:
+		ra = ra & temp;
+		ra = (unsigned char)((ra >> 1) | (GET_CARRY() ? 0x80 : 0));
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		SET_CARRY((ra >> 6) & 0x01);
+		SET_OVERFLOW(((ra >> 6) ^ (ra >> 5)) & 0x01);
+		break;
+	case SXAA:   // unstable on hardware; unverified against FCEUX
+		ra = rx & temp;
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		break;
+	case SATX:   // unstable on hardware; unverified against FCEUX
+		ra = temp;
+		rx = temp;
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		break;
+	case SAXS:
+		{
+			unsigned char ax = (unsigned char)(ra & rx);
+			SET_CARRY(ax >= temp);
+			rx = (unsigned char)(ax - temp);
+			SET_ZERO(rx);
+			SET_NEGATIVE_BY_BIT(rx);
+		}
+		break;
+	case SLAS:
+		rsp = (unsigned char)(temp & rsp);
+		ra = rsp;
+		rx = rsp;
+		SET_ZERO(ra);
+		SET_NEGATIVE_BY_BIT(ra);
+		break;
+	case SAHX:
+	case STAS:
+	case SSHY:
+	case SSHX:
+		{
+			// Unstable stores (unverified against FCEUX): the stored value is ANDed with the high byte
+			// of the base address plus 1, and a page-crossing index replaces the target's high byte.
+			unsigned short base = (addressing_mode == ADDR_INDIRECT_Y) ? (unsigned short)ADDRESS_ZERO_PAGE_WRAP(op8) : op16;
+			unsigned char idx = (instruction == SSHY) ? rx : ry;
+			unsigned char v;
+			if (instruction == SAHX)      v = (unsigned char)(ra & rx);
+			else if (instruction == STAS) { rsp = (unsigned char)(ra & rx); v = rsp; }
+			else if (instruction == SSHY) v = ry;
+			else                          v = rx;
+			v = (unsigned char)(v & ((base >> 8) + 1));
+			unsigned short addr = (unsigned short)(base + idx);
+			if (PAGE_CROSSED(base, addr))
+				addr = (unsigned short)((addr & 0x00FF) | (v << 8));
+			mem_write(addr, v);
+		}
+		break;
 	case SLAX:
 		ra = temp;
 		rx = temp;
@@ -1096,6 +1175,22 @@ bool cpu_6502::step(bool log)
 		}
 	}
 
+	// What is left on the data bus after the instruction (spec O-14): the stored value, or the
+	// high byte of the new PC for JSR / indirect JMP / BRK (the last byte read).
+	if (store && addressing_mode != ADDR_ACCUMULATOR)   // accumulator shifts write A, not the bus
+		data_bus = temp_out;
+	if (instruction == JSR || instruction == BRK || (instruction == JMP && addressing_mode == ADDR_JMP_INDIRECT))
+		data_bus = (unsigned char)(rpc >> 8);
+	// A branch that is not taken never reads its offset byte: the opcode stays on the bus (a taken
+	// branch costs extra cycles and leaves the offset).
+	if (addressing_mode == ADDR_RELATIVE && instruction_cycles == opcode_items[opcode].cycles)
+		data_bus = opcode;
+	// Zero-page and immediate NOP variants do not read their operand: the opcode stays on the bus
+	// (absolute variants do read; spec O-14).
+	if (instruction == SNOP && (addressing_mode == ADDR_ZERO_PAGE || addressing_mode == ADDR_ZERO_PAGE_X ||
+	                            addressing_mode == ADDR_IMMEDIATE))
+		data_bus = opcode;
+
 	cycle += instruction_cycles;
 	pending_instruction_cycles = 0;
 
@@ -1119,5 +1214,6 @@ void cpu_6502::nmi()
 	STACK_PUSH(rp & 0xEF);  // push P with B flag clear
 	SET_INTERRUPT(1);
 	rpc = *((unsigned short*)(mem + 0xFFFA));  // NMI vector at $FFFA/$FFFB
+	data_bus = (unsigned char)(rpc >> 8);
 	cycle += 7;
 }

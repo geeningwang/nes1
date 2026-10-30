@@ -55,6 +55,7 @@ private:
 	unsigned char rp;
 
 	unsigned char *mem;
+	unsigned char data_bus;  // value of the last bus access; returned by reads of unmapped addresses
 	ppu_2c02* ppu;
 	apu_2a03* apu;
 	unsigned char pending_instruction_cycles;

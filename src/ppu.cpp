@@ -167,6 +167,8 @@ ppu_2c02::ppu_2c02()
 	reg_mask     = 0;
 	reg_status   = 0;
 	reg_oam_addr = 0;
+	io_latch     = 0;
+	oam_spl      = 0;
 	v       = 0;
 	t       = 0;
 	fine_x  = 0;
@@ -730,15 +732,14 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 
 	switch (addr)
 	{
-	case 0x2002:  // PPUSTATUS
+	case 0x2002:  // PPUSTATUS: bits 7-5 are status, bits 4-0 come from the I/O latch
 	{
-		unsigned char result = reg_status;
+		unsigned char result = (unsigned char)((reg_status & 0xE0) | (io_latch & 0x1F));
 		reg_status &= 0x7F;  // clear vblank flag on read
 		w = 0;               // reset address latch
+		io_latch = result;
 		return result;
 	}
-	case 0x2004:  // OAMDATA
-		return oam[reg_oam_addr];
 	case 0x2007:  // PPUDATA
 	{
 		unsigned char result = data_buf;
@@ -747,16 +748,18 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 		if ((v & 0x3FFF) >= 0x3F00)
 			result = data_buf;
 		v += (reg_ctrl & 0x04) ? 32 : 1;
+		io_latch = result;
 		return result;
 	}
-	default:
-		return 0;
+	default:      // write-only registers read back the I/O latch
+		return io_latch;
 	}
 }
 
 void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 {
 	addr = 0x2000 + (addr & 0x0007);
+	io_latch = val;   // every write to a PPU register drives the latch
 
 	switch (addr)
 	{
@@ -770,9 +773,10 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 		break;
 	case 0x2003:  // OAMADDR
 		reg_oam_addr = val;
+		oam_spl = val & 7;
 		break;
 	case 0x2004:  // OAMDATA
-		oam[reg_oam_addr++] = val;
+		write_oam_byte(val);
 		break;
 	case 0x2005:  // PPUSCROLL (2 writes)
 		if (w == 0)
@@ -864,6 +868,8 @@ void ppu_2c02::set_vblank(bool vb)
 void ppu_2c02::raise_vblank()
 {
 	reg_status |= 0x80;
+	reg_oam_addr = 0;   // spec O-15: OAMADDR and the OAM write counter are reset when vblank starts
+	oam_spl      = 0;
 }
 
 // Capture NT/PAL/scroll into render buffers and clear the VBL flag.
@@ -883,14 +889,66 @@ void ppu_2c02::snapshot_render()
 		render_nt[i] = mem[0x2000 + i];
 	for (int i = 0; i < 0x20; ++i)
 		render_pal[i] = mem[0x3F00 + i];
-	// Clear VBL flag (end of vblank period)
-	reg_status &= 0x7F;
+	// End of vblank: the VBL, sprite-0 and sprite-overflow flags are cleared together
+	reg_status &= 0x1F;
+}
+
+// $2004 write as FCEUX performs it (spec O-10): while the write counter is below 8 the byte goes to
+// OAM[counter] regardless of OAMADDR; afterwards it goes to OAM[OAMADDR] only if OAMADDR >= 8.
+void ppu_2c02::write_oam_byte(unsigned char val)
+{
+	io_latch = val;   // DMA writes go through $2004 and drive the I/O latch too (spec O-16)
+	if (oam_spl >= 8) {
+		if (reg_oam_addr >= 8)
+			oam[reg_oam_addr] = val;
+	} else {
+		oam[oam_spl] = val;
+	}
+	++reg_oam_addr;
+	++oam_spl;
+}
+
+// Y increment of the VRAM address, as the real PPU does at the end of a rendered line.
+void ppu_2c02::dot256_updates(int sl)
+{
+	if ((reg_mask & 0x18) == 0) return;   // nothing happens while rendering is off
+
+	unsigned short a = v;
+	if ((a & 0x7000) != 0x7000) {
+		a += 0x1000;                      // fine Y
+	} else {
+		a &= (unsigned short)~0x7000;
+		int y = (a & 0x03E0) >> 5;        // coarse Y
+		if (y == 29)      { y = 0; a ^= 0x0800; }   // wrap to the other nametable
+		else if (y == 31) { y = 0; }                // wrap without switching
+		else              { ++y; }
+		a = (unsigned short)((a & ~0x03E0) | (y << 5));
+	}
+	v = a;
+
+	// Sprite overflow: more than 8 sprites (8x8) in range of this line.
+	int n = 0;
+	for (int i = 0; i < 64; ++i)
+		if ((unsigned)(sl - (int)oam[i * 4]) < 8u) ++n;
+	if (n > 8) reg_status |= 0x20;
+}
+
+void ppu_2c02::copy_horizontal_bits()
+{
+	if ((reg_mask & 0x18) == 0) return;
+	v = (unsigned short)((v & ~0x041F) | (t & 0x041F));
+}
+
+void ppu_2c02::copy_t_to_v()
+{
+	if ((reg_mask & 0x18) == 0) return;
+	v = t;
 }
 
 void ppu_2c02::oam_dma(unsigned char* page_data)
 {
 	for (int i = 0; i < 256; i++)
-		oam[(reg_oam_addr + i) & 0xFF] = page_data[i];
+		write_oam_byte(page_data[i]);
 }
 
 void ppu_2c02::begin_frame()

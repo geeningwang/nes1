@@ -313,32 +313,34 @@ bool frameIntervalElapsed()
 //   9. begin_frame()         seed scanline_scroll[] from Loopy T; snap OAM
 //  10. 240 visible scanlines 341 PPU each (via run_ppu, deficit carried forward)
 //
-// run_ppu() uses a persistent cycle_counter (carries instruction-boundary overshoot
-// between calls, like FCEUX's X6502_Run) and a ppu_remainder accumulator.
+// run_ppu() uses a persistent ppu_budget in PPU dots (carries instruction-boundary overshoot
+// between calls, like FCEUX's X6502_Run).
 // This gives per-frame CPU = exactly 29780 or 29781 (alternating via kook),
 // identical to FCEUX — no cumulative drift.
+int g_ppu_budget = 0;   // CPU budget in PPU dots (1 CPU cycle = 3 dots); negative = overshoot debt
+int g_line_ov[4] = { 0, 0, 0, 0 };   // overshoot after each time slice of the current visible line (debug aid)
+
 static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_samples = nullptr)
 {
 	// Persistent state (survives across frames, like FCEUX's global counters)
-	static int ppu_remainder = 0;  // PPU sub-cycle carry (0-2)
-	static int cycle_counter = 0;  // CPU cycle budget; negative = overshoot debt
+	int& ppu_budget = g_ppu_budget;
 	static int kook          = 0;  // alternating pre-render length (0 → 16 PPU, 1 → 15 PPU)
 
 	// Convert PPU cycles to CPU cycles (with accumulation) and run instructions.
 	// Overshoot from a completed instruction is automatically absorbed by the
-	// NEXT call (cycle_counter stays negative until the next budget replenishes it).
+	// NEXT call (ppu_budget stays negative until the next budget replenishes it).
+	// An instruction starts whenever any budget is left, even a fraction of a CPU cycle
+	// (spec O-9), so the budget is kept in dots rather than whole cycles.
 	auto run_ppu = [&](int ppu_cycles) {
-		ppu_remainder += ppu_cycles;
-		cycle_counter += ppu_remainder / 3;
-		ppu_remainder  %= 3;
-		while (cycle_counter > 0) {
+		ppu_budget += ppu_cycles;
+		while (ppu_budget > 0) {
 			if (g_dumper) g_dumper->on_instruction();
 			unsigned int before = cpu.cycle;
 			cpu.step(false);
 			unsigned int elapsed = cpu.cycle - before;
 			if (audio_samples)
 				apu.tick_n(elapsed, *audio_samples);
-			cycle_counter -= (int)elapsed;
+			ppu_budget -= 3 * (int)elapsed;
 		}
 	};
 
@@ -347,6 +349,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		// ppudead: FCEUX runs X6502_Run(scanlines_per_frame * 341) = 89342 PPU,
 		// no VBL set, no kook adjustment.
 		run_ppu(262 * 341);
+		memset(ppu.fb_idx, 0x80, sizeof(ppu.fb_idx));   // spec O-4: power-up frames are all $80
 		return;
 	}
 
@@ -367,8 +370,8 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		// On real NES / FCEUX, the NMI fires WITHIN X6502_Run and its 7 cycles
 		// consume part of the vblank budget.  In NES1, cpu.nmi() charges those
 		// 7 cycles directly to cpu.cycle outside of run_ppu, so we must subtract
-		// them from cycle_counter here to keep the timing aligned.
-		cycle_counter -= 7;
+		// them from ppu_budget here to keep the timing aligned.
+		ppu_budget -= 7 * 3;
 	}
 
 	// ── Step 5: snap pre-NMI scroll (for debug export only) ──────────────
@@ -393,6 +396,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	// at pre-render dot 325) so it sees the NMI-written scroll.
 	run_ppu(256);
 	run_ppu(69);
+	ppu.copy_t_to_v();   // spec O-12: V <- T at pre-render dot 325
 	run_ppu(16 - kook);
 	kook ^= 1;
 
@@ -407,7 +411,18 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		ppu.begin_scanline(sl);
 		ppu.check_sprite0_hit(sl);
 		if (g_dumper) g_dumper->scanline = sl;
-		run_ppu(341);
+		// 341 dots in the same four chunks as FCEUX's line (256 + 6 + 63 + 16); the PPU
+		// address and sprite-overflow updates happen at the chunk boundaries.
+		run_ppu(256);
+		g_line_ov[0] = -ppu_budget;
+		ppu.dot256_updates(sl);
+		run_ppu(6);
+		g_line_ov[1] = -ppu_budget;
+		ppu.copy_horizontal_bits();
+		run_ppu(63);
+		g_line_ov[2] = -ppu_budget;
+		run_ppu(16);
+		g_line_ov[3] = -ppu_budget;
 		ppu.end_scanline(sl);
 		// Render this scanline live, reading from current mem[] so VRAM writes
 		// made by the CPU during this scanline's run_ppu() are immediately visible.

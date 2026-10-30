@@ -88,7 +88,7 @@ def compare_traces(ta, tb):
 
 
 def trace_fields(line):
-    names = ("PC", "OP", "A", "X", "Y", "S", "P", "CYCLES", "SCANLINE")
+    names = ("PC", "OP", "A", "X", "Y", "S", "P", "CYCLES", "SCANLINE", "DB", "PL")
     return dict(zip(names, line.split()))
 
 

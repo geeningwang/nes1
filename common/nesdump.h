@@ -56,6 +56,10 @@ struct State {
 	uint8_t  fine_x, w, readbuf;
 	char     mirror;          // 'H' or 'V'
 
+	int      ov[4];           // dots by which the CPU ran past the end of each of the line's 4 time slices (debug aid)
+	uint8_t  db;              // CPU data-bus latch (value of the last bus access)
+	uint8_t  ppu_latch;       // PPU I/O latch ("open bus" of the PPU registers)
+
 	uint8_t  apu[0x18];       // last value written to $4000-$4017 (0 if never written)
 
 	uint8_t  ram[0x800];      // CPU RAM $0000-$07FF
@@ -71,6 +75,8 @@ struct State {
 struct Insn {
 	uint16_t pc;
 	uint8_t  op, a, x, y, s, p;
+	uint8_t  db;              // data-bus latch before the instruction
+	uint8_t  pl;              // PPU I/O latch before the instruction
 	uint64_t cycles;          // total CPU cycles before this instruction's cost is added
 	int      frame;
 	int      scanline;        // visible scanline or -1
@@ -301,7 +307,7 @@ public:
 			char name[64];
 			snprintf(name, sizeof(name), "trace_f%06d.txt", frame);
 			trace_ = open_wb(join(name).c_str());
-			if (trace_) fputs("# PC OP A X Y S P CYCLES SCANLINE\n", trace_);
+			if (trace_) fputs("# PC OP A X Y S P CYCLES SCANLINE DB PL\n", trace_);
 		}
 	}
 	void end_frame()
@@ -319,10 +325,10 @@ public:
 		const uint8_t p = norm_p(i.p);
 		uint64_t w = (uint64_t)i.pc | ((uint64_t)i.op << 16) | ((uint64_t)i.a << 24) | ((uint64_t)i.x << 32) |
 		             ((uint64_t)i.y << 40) | ((uint64_t)i.s << 48) | ((uint64_t)p << 56);
-		frame_hash_ = mix64(mix64(frame_hash_, w), i.cycles);
+		frame_hash_ = mix64(mix64(mix64(mix64(frame_hash_, w), i.cycles), i.db), i.pl);
 		if (trace_)
-			fprintf(trace_, "%04X %02X %02X %02X %02X %02X %02X %llu %d\n", i.pc, i.op, i.a, i.x, i.y, i.s, p,
-			        (unsigned long long)i.cycles, i.scanline);
+			fprintf(trace_, "%04X %02X %02X %02X %02X %02X %02X %llu %d %02X %02X\n", i.pc, i.op, i.a, i.x, i.y, i.s, p,
+			        (unsigned long long)i.cycles, i.scanline, i.db, i.pl);
 		int r = 0;
 		if (!cfg_.pcs.empty() && want_pc(i.pc, i.frame)) r |= 1;
 		if (!cfg_.dump_insns.empty() && cfg_.dump_insns.contains((int)insn_total_)) r |= 2;
@@ -423,7 +429,7 @@ public:
 private:
 	static void le(uint8_t* b, int& n, uint64_t v, int bytes) { for (int i = 0; i < bytes; ++i) b[n++] = (uint8_t)(v >> (8 * i)); }
 
-	struct Sections { uint64_t cpu, ppu, apu, ram, nt, pal, oam, chr, prg, fb, insn, all; };
+	struct Sections { uint64_t cpu, ppu, bus, apu, ram, nt, pal, oam, chr, prg, fb, insn, all; };
 
 	Sections hash_sections(const State& s, const uint8_t* pal, const uint8_t* fb, int rows) const
 	{
@@ -438,6 +444,9 @@ private:
 		le(b, n, s.v & 0x7FFF, 2); le(b, n, s.t & 0x7FFF, 2);
 		le(b, n, s.fine_x, 1); le(b, n, s.w, 1); le(b, n, s.readbuf, 1); le(b, n, (uint8_t)s.mirror, 1);
 		h.ppu = hash64(b, (size_t)n);
+		n = 0;
+		le(b, n, s.db, 1); le(b, n, s.ppu_latch, 1);
+		h.bus = hash64(b, (size_t)n);
 		h.apu = hash64(s.apu, sizeof(s.apu));
 		h.ram = hash64(s.ram, sizeof(s.ram));
 		h.nt  = hash64(s.nt, sizeof(s.nt));
@@ -448,7 +457,7 @@ private:
 		h.fb  = hash64(fb, (size_t)rows * kFbWidth, (uint64_t)rows);
 		h.insn = mix64(frame_hash_, (uint64_t)frame_insn_);
 		uint64_t all = 0;
-		const uint64_t parts[] = { h.cpu, h.ppu, h.apu, h.ram, h.nt, h.pal, h.oam, h.chr, h.prg, h.fb, h.insn };
+		const uint64_t parts[] = { h.cpu, h.ppu, h.bus, h.apu, h.ram, h.nt, h.pal, h.oam, h.chr, h.prg, h.fb, h.insn };
 		for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) all = mix64(all, parts[i]);
 		h.all = all;
 		return h;
@@ -458,11 +467,11 @@ private:
 	{
 		Sections h = hash_sections(s, pal, fb, rows);
 		fprintf(events_,
-		        "%06d %s f=%d sl=%d pc=%04X cyc=%llu ALL=%016llX CPU=%016llX PPU=%016llX APU=%016llX RAM=%016llX "
+		        "%06d %s f=%d sl=%d pc=%04X cyc=%llu v=%04X st=%02X ov=%d,%d,%d,%d ALL=%016llX CPU=%016llX PPU=%016llX BUS=%016llX APU=%016llX RAM=%016llX "
 		        "NT=%016llX PAL=%016llX OAM=%016llX CHR=%016llX PRG=%016llX FB=%016llX INSN=%016llX/%u\n",
-		        ++seq_, fname.c_str(), s.frame, s.scanline, s.pc, (unsigned long long)s.cycles,
+		        ++seq_, fname.c_str(), s.frame, s.scanline, s.pc, (unsigned long long)s.cycles, s.v & 0x7FFF, s.status, s.ov[0], s.ov[1], s.ov[2], s.ov[3],
 		        (unsigned long long)h.all, (unsigned long long)h.cpu, (unsigned long long)h.ppu,
-		        (unsigned long long)h.apu, (unsigned long long)h.ram, (unsigned long long)h.nt,
+		        (unsigned long long)h.bus, (unsigned long long)h.apu, (unsigned long long)h.ram, (unsigned long long)h.nt,
 		        (unsigned long long)h.pal, (unsigned long long)h.oam, (unsigned long long)h.chr,
 		        (unsigned long long)h.prg, (unsigned long long)h.fb, (unsigned long long)frame_hash_mix(),
 		        (unsigned)frame_insn_);
@@ -487,6 +496,7 @@ private:
 		fprintf(f, "CTRL=%02X MASK=%02X STATUS=%02X OAMADDR=%02X\n", s.ctrl, s.mask, s.status, s.oamaddr);
 		fprintf(f, "V=%04X T=%04X FINEX=%d W=%d READBUF=%02X MIRROR=%c\n",
 		        s.v & 0x7FFF, s.t & 0x7FFF, s.fine_x, s.w, s.readbuf, s.mirror);
+		fprintf(f, "[BUS]\nDB=%02X PPULATCH=%02X\n", s.db, s.ppu_latch);
 		put_hex(f, "APU", 0x4000, s.apu, 0x18);
 		put_hex(f, "RAM", 0x0000, s.ram, 0x800);
 		put_hex(f, "NT", 0x2000, s.nt, 0x800);
