@@ -88,7 +88,7 @@ Common failure: `error in opening file.` means the ROM path is wrong. The path c
 
 Other headless modes (see the main `readme.md`): `--autotest <outdir>` and `--scanlinetrace <outpath> <frame>`.
 
-To compare snapshots against FCEUX reference output, install FCEUX (step 6) and see [how_to_dense_report.md](how_to_dense_report.md).
+To compare snapshots against FCEUX reference output, install FCEUX (step 6) and see [how_to_dense_report.md](how_to_dense_report.md). For whole-machine state dumps from both emulators, see [state_dump.md](state_dump.md) and step 7.
 
 ## 5. Run interactively
 
@@ -130,6 +130,45 @@ Notes:
 - **Paths in the repo scripts.** Several scripts and Lua files hardcode `C:\Work\nes1\...` (Windows paths are case-insensitive, so `C:\work\nes1` matches) and `run_fceux.ps1` hardcodes `C:\Work\fceux-2.6.6\vc\x64\Release\fceux64.exe`. Either keep the source at `C:\work\nes1`, or edit the paths at the top of those scripts. If the FCEUX path in `run_fceux.ps1` does not match, copy `fceux64.exe` and its DLLs to that folder or edit the script.
 - Only the download, extraction, PATH change and process launch were verified on a clean machine; running a Lua script needs the interactive session described above.
 
+## 7. Build the patched FCEUX (headless state dumps)
+
+The stock FCEUX from step 6 cannot run without a desktop. For automated nes1-vs-FCEUX comparison the repo carries a patched FCEUX 2.6.6 under `tool\fceux-2.6.6` that adds a headless `--dump` mode (see [state_dump.md](state_dump.md)). Build it from source with the same Build Tools:
+
+```powershell
+$msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+  -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+
+& $msbuild C:\work\nes1\tool\fceux-2.6.6\vc\vc14_fceux.vcxproj `
+  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /t:Build /m /nologo /v:minimal
+```
+
+The output is `tool\fceux-2.6.6\vc\x64\Release\fceux64.exe`. A first build takes a few minutes. The `PlatformToolset=v143` override is needed because the project targets VS 2019 by default; the compiler warnings it prints are pre-existing.
+
+**`scmrev.h` not found.** A pre-build step runs `vc\defaultconfig\make_scmrev.h.js`, which needs `git` on the PATH to generate `vc\userconfig\scmrev.h`. If git is not installed the step fails silently and compilation stops with `C1083: Cannot open include file: 'scmrev.h'`. Either install git, or create the file by hand:
+
+```powershell
+Set-Content C:\work\nes1\tool\fceux-2.6.6\vc\userconfig\scmrev.h @'
+#define SCM_REV_STR "local"
+#define SCM_DESC_STR "2.6.6-nes1"
+#define SCM_BRANCH_STR "local"
+#define SCM_IS_MASTER 0
+'@ -Encoding ascii
+```
+
+The file is a build artifact; do not commit it.
+
+Run both emulators with the same arguments and compare:
+
+```powershell
+$rom = 'C:\work\nes1\test\mappy\Mappy (Japan).nes'
+$a = '--frames','120','--dump-frames','1-120'
+& C:\work\nes1\src\x64\Debug\nes1.exe $rom --dump C:\work\out_nes1 @a
+& C:\work\nes1\tool\fceux-2.6.6\vc\x64\Release\fceux64.exe $rom --dump C:\work\out_fceux @a
+python C:\work\nes1\tool\compare_dumps.py C:\work\out_nes1 C:\work\out_fceux --summary
+```
+
+Both run to completion in a few seconds, with no window and no desktop session (they work from a service, SSH or a startup script). `compare_dumps.py` needs Python 3; any machine with Python can run it on copies of the two output folders.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -140,3 +179,4 @@ Notes:
 | `error in opening file.` | ROM path wrong or not quoted. |
 | Frametest produces 0 files | The ROM failed to load; see above. The exit code is still 0, so check the output folder. |
 | FCEUX launches but the Lua script never runs / no output | No interactive desktop session; run it from RDP or the console (step 6). |
+| `C1083: Cannot open include file: 'scmrev.h'` building FCEUX | git is not on the PATH; create `scmrev.h` by hand (step 7). |

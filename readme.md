@@ -100,6 +100,14 @@ nes1.exe <rom.nes> --autotest <outdir>
 
 Runs all 1024 combinations of NES colour × PPUMASK emphasis bits through the colour_test ROM and exports text snapshots.
 
+### State dump — whole-machine text dump at frame / scanline / PC events
+
+```
+nes1.exe <rom.nes> --dump <outdir> [--frames N] [--dump-frames LIST] [--dump-scanline-frames LIST] [--dump-scanlines LIST] [--dump-pc ADDR,...]
+```
+
+Headless (no window or audio). Writes CPU registers, RAM, PPU registers/nametables/palette/OAM, APU registers and ROM to plain-text files. The patched FCEUX under `tool/` accepts the same command line and writes the same format, so the two can be compared with `tool/compare_dumps.py`. See [doc/state_dump.md](doc/state_dump.md).
+
 ### Scanline trace — per-scanline CPU+PPU state dump
 
 ```

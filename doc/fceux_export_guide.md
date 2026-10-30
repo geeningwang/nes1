@@ -5,6 +5,10 @@ per-frame txt+bmp and per-scanline CPU+PPU state files for comparison.
 
 Sections 1–6 cover the **FCEUX** side. Section 7 covers the **nes1** side.
 
+> For automated, headless runs that dump the complete machine state (RAM, VRAM, registers, ROM) from
+> both emulators at frame / scanline / PC events, see [state_dump.md](state_dump.md). This guide describes
+> the older Lua-driven frame export.
+
 ---
 
 ## 1. Prerequisites
