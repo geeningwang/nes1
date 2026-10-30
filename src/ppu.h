@@ -69,9 +69,11 @@ struct ScanlineTraceEntry {
 };
 
 class cpu_6502;
+struct NesDumpAccess;
 
 class ppu_2c02
 {
+	friend struct NesDumpAccess;  // state dump (statedump.cpp) reads private state
 public:
 	ppu_2c02();
 	~ppu_2c02();

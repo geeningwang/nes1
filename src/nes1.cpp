@@ -5,6 +5,7 @@
 #include "cpu.h"
 #include "ppu.h"
 #include "apu.h"
+#include "statedump.h"
 #include <xaudio2.h>
 #include <vector>
 #pragma comment(lib, "xaudio2.lib")
@@ -331,6 +332,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		cycle_counter += ppu_remainder / 3;
 		ppu_remainder  %= 3;
 		while (cycle_counter > 0) {
+			if (g_dumper) g_dumper->on_instruction();
 			unsigned int before = cpu.cycle;
 			cpu.step(false);
 			unsigned int elapsed = cpu.cycle - before;
@@ -404,12 +406,46 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	{
 		ppu.begin_scanline(sl);
 		ppu.check_sprite0_hit(sl);
+		if (g_dumper) g_dumper->scanline = sl;
 		run_ppu(341);
 		ppu.end_scanline(sl);
 		// Render this scanline live, reading from current mem[] so VRAM writes
 		// made by the CPU during this scanline's run_ppu() are immediately visible.
 		ppu.render_scanline(sl, ppu.framebuf);
+		if (g_dumper) g_dumper->on_scanline_end(sl);
 	}
+}
+
+// Headless state-dump run: "<rom> --dump <outdir> [options]" (see doc/state_dump.md).
+// Emulates cfg.frames frames from reset with no window, audio or input, writing a
+// text dump of the whole machine state at the requested frame/scanline/PC events.
+static int run_dump_mode(const nesdump::Config& cfg)
+{
+	nesdump::Recorder rec;
+	if (!rec.open(cfg, "nes1"))
+		return 2;
+	StateDumper dumper(rec);
+	g_dumper = &dumper;
+	dumper.write_rom();
+
+	// Same per-scanline live rendering path as --frametest, so PPU behaviour is identical.
+	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
+	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+	ppu.framebuf = screen_buf;
+
+	for (int f = 1; f <= cfg.frames; f++)
+	{
+		dumper.begin_frame();
+		run_one_frame(/*suppress_vbl=*/(f <= 2));   // frames 1-2 are ppudead, as in FCEUX
+		dumper.on_frame_end();
+	}
+
+	ppu.framebuf = nullptr;
+	delete[] screen_buf;
+	g_dumper = nullptr;
+	rec.close(cfg.frames);
+	printf("nes1 dump done: %d frames, output in %s\n", cfg.frames, cfg.outdir.c_str());
+	return 0;
 }
 
 // ZP addresses for color_test.s variables (from nrom.cfg + source order)
@@ -648,8 +684,21 @@ static void run_scanlinetrace(const char* outdir, int target_frame)
 
 int main(int argc, char* argv[])
 {
+	nesdump::Config dump_cfg;
+	const bool dump_mode = nesdump::Config::requested(argc, argv);
+	if (dump_mode)
+	{
+		std::string err;
+		if (!dump_cfg.parse(argc, argv, err))
+		{
+			fprintf(stderr, "error: %s\n%s", err.c_str(), nesdump::Config::usage());
+			return 2;
+		}
+	}
+
 	prepareTimer();
-	initMainWindow();
+	if (!dump_mode)
+		initMainWindow();   // dump mode is headless: no window
 
 	// Load NES ROM file
 	if (argc < 2)
@@ -726,6 +775,8 @@ int main(int argc, char* argv[])
 	cpu.set_apu(&apu);
 
 	// ── Automated headless test modes ───────────────────────────────────────
+	if (dump_mode)
+		return run_dump_mode(dump_cfg);
 	if (argc >= 4 && strcmp(argv[2], "--autotest") == 0)
 	{
 		// Runs all 1024 (64 colours × 16 emphasis/greyscale) combinations

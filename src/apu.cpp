@@ -192,6 +192,7 @@ apu_2a03::apu_2a03()
     : frame_cycles(0), frame_step(0), frame_irq_inhibit(false),
       frame_mode(false), sample_accum(0.0)
 {
+    memset(reg_shadow, 0, sizeof(reg_shadow));
     pulse[0] = PulseChannel{};
     pulse[1] = PulseChannel{};
     pulse[1].sweep.is_pulse2 = true;
@@ -202,6 +203,7 @@ apu_2a03::apu_2a03()
 
 void apu_2a03::write(unsigned short addr, unsigned char val)
 {
+    if (addr >= 0x4000 && addr <= 0x4017) reg_shadow[addr - 0x4000] = val;
     if (addr <= 0x4003)       pulse[0].write(addr, val);
     else if (addr <= 0x4007)  pulse[1].write(addr, val);
     else if (addr <= 0x400B)  tri.write(addr, val);

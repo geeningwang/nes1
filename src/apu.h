@@ -124,7 +124,10 @@ struct NoiseChannel {
     unsigned char output() const;
 };
 
+struct NesDumpAccess;
+
 class apu_2a03 {
+    friend struct NesDumpAccess;  // state dump (statedump.cpp) reads private state
 public:
     apu_2a03();
 
@@ -143,6 +146,9 @@ private:
     void clock_quarter_frame();   // envelope + triangle linear
     void clock_half_frame();      // length + sweep (also calls quarter)
     short mix() const;
+
+    // Last value written to each of $4000-$4017, for the state dump.
+    unsigned char  reg_shadow[0x18];
 
     PulseChannel   pulse[2];
     TriangleChannel tri;

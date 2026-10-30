@@ -2,9 +2,11 @@
 
 class ppu_2c02;
 class apu_2a03;
+struct NesDumpAccess;
 
 class cpu_6502
 {
+	friend struct NesDumpAccess;  // state dump (statedump.cpp) reads private state
 public:
 	cpu_6502();
 	~cpu_6502();
