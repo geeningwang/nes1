@@ -234,7 +234,8 @@ line and I-flag latency, `$4015` semantics, length counters and the DMC (fetch s
 dump has a new `[APUX]` section (spec 1.9). Decision-gate outcome (p4-schema): the audio-only state of the pulse,
 triangle and noise channels (timers, sequencers, envelopes, sweeps, linear counter, LFSR, mixer) is **not** compared:
 FCEUX computes it lazily at sound-flush time in a form that depends on its sample-rate settings, and the CPU cannot see
-it. Probes: `apu_len_status`, `apu_frame_irq`, `apu_frame_mode`, `apu_dmc_irq` and the random-traffic `apu_fuzz`.
+it. Result after phase 4: all 17 suite entries (the 12 above plus the 5 APU probes) IDENTICAL for 3000 frames at scanline
+level, including `[APUX]` and the instruction hash. Probes: `apu_len_status`, `apu_frame_irq`, `apu_frame_mode`, `apu_dmc_irq` and the random-traffic `apu_fuzz`.
 
 ### Still open
 
