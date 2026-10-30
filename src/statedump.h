@@ -9,19 +9,19 @@ class StateDumper {
 public:
 	explicit StateDumper(nesdump::Recorder& r) : rec(r), frame(0), scanline(-1) {}
 
-	void begin_frame()           { ++frame; scanline = -1; }
-	void on_instruction()        { if (rec.any_pc_watch()) check_pc(); }  // before each instruction executes
+	void begin_frame()           { ++frame; scanline = -1; rec.begin_frame(frame); }
+	void on_instruction();                                                // before each instruction executes
 	void on_scanline_end(int sl);                                         // all work for visible scanline sl is done
 	void on_frame_end();                                                  // whole frame emulated
 	bool write_rom();
+	void init_pc(int pc);                                                 // --init-pc
 
 	nesdump::Recorder& rec;
 	int frame;      // 1-based
 	int scanline;   // visible scanline being emulated, else -1
 
 private:
-	void check_pc();
-	void emit(const char* event, int pc_trigger, int pc_hit);
+	void emit(const char* event, int pc_trigger, int pc_hit, int insn_no);
 };
 
 extern StateDumper* g_dumper;

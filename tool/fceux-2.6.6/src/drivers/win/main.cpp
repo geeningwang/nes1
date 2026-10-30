@@ -706,6 +706,7 @@ static int RunHeadlessDump(int argc, char *argv[])
 		return 2;
 	}
 	FCEUI_SetRegion(0, 0);   // NTSC
+	NesDump_InitPC();
 
 	const int nframes = NesDump_Frames();
 	for(int i = 0; i < nframes; ++i)

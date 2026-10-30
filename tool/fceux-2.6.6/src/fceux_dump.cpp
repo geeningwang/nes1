@@ -24,9 +24,10 @@ extern uint8  VRAMBuffer;
 extern uint8 *vnapage[4];
 extern uint8 *RAM;
 extern uint64 timestampbase;
+extern uint8 *XBuf;   // 256x256 palette-index frame buffer (video.cpp)
 
 int   g_nesdump_active   = 0;
-int   g_nesdump_pc_watch = 0;
+int   g_nesdump_insn_hook = 0;
 uint8 g_nesdump_apu[0x18] = { 0 };
 
 static nesdump::Config   g_cfg;
@@ -48,7 +49,7 @@ bool NesDump_Open(int argc, char** argv, char* errbuf, int errlen)
 		return false;
 	}
 	g_nesdump_active = 1;
-	g_nesdump_pc_watch = g_rec.any_pc_watch() ? 1 : 0;
+	g_nesdump_insn_hook = 1;   // the chained instruction hash needs every instruction
 	return true;
 }
 
@@ -86,9 +87,10 @@ static void fill(nesdump::State& s)
 	}
 	s.chr = g_chr;
 	s.prg = g_prg;
+	s.fb  = XBuf;
 }
 
-static void emit(const char* event, int pc_trigger, int pc_hit)
+static void emit(const char* event, int pc_trigger, int pc_hit, int insn_no)
 {
 	nesdump::State s;
 	memset(&s, 0, sizeof(s));
@@ -97,6 +99,7 @@ static void emit(const char* event, int pc_trigger, int pc_hit)
 	s.scanline = g_scanline;
 	s.pc_trigger = pc_trigger;
 	s.pc_hit = pc_hit;
+	s.insn_no = insn_no;
 	fill(s);
 	g_rec.write_event(s);
 }
@@ -105,6 +108,7 @@ void NesDump_BeginFrame()
 {
 	++g_frame;
 	g_scanline = -1;
+	g_rec.begin_frame(g_frame);
 	if (g_frame == 1) {   // ROM is static for NROM: write rom.txt once, before frame 1 runs
 		nesdump::State s;
 		memset(&s, 0, sizeof(s));
@@ -115,7 +119,8 @@ void NesDump_BeginFrame()
 
 void NesDump_EndFrame()
 {
-	if (g_rec.want_frame(g_frame)) emit("frame", -1, 0);
+	if (g_rec.want_frame(g_frame)) emit("frame", -1, 0, 0);
+	g_rec.end_frame();
 }
 
 void NesDump_BeginScanline(int sl) { g_scanline = sl; }
@@ -123,18 +128,43 @@ void NesDump_BeginScanline(int sl) { g_scanline = sl; }
 void NesDump_EndScanline(int sl)
 {
 	g_scanline = sl;
-	if (g_rec.want_scanline(g_frame, sl)) emit("scanline", -1, 0);
+	if (g_rec.want_scanline(g_frame, sl)) emit("scanline", -1, 0, 0);
 	g_scanline = -1;
 }
 
-void NesDump_CheckPC(unsigned pc)
+// The opcode at PC as the contract defines it: RAM mirrors below $2000, the page tables above $8000.
+static uint8 opcode_at(unsigned pc)
 {
-	if (g_rec.want_pc((uint16_t)pc, g_frame)) emit("pc", (int)pc, g_rec.pc_hit((uint16_t)pc));
+	if (pc < 0x2000) return RAM ? RAM[pc & 0x7FF] : 0xFF;
+	if (pc >= 0x8000) { uint8* pg = Page[pc >> 11]; return pg ? pg[pc] : 0xFF; }
+	return 0xFF;
+}
+
+void NesDump_Insn()
+{
+	nesdump::Insn i;
+	i.pc = (uint16_t)X.PC;  i.op = opcode_at(X.PC);
+	i.a = X.A;  i.x = X.X;  i.y = X.Y;  i.s = X.S;  i.p = X.P;
+	i.cycles = timestampbase + timestamp;
+	i.frame = g_frame;
+	i.scanline = g_scanline;
+	int r = g_rec.insn(i);
+	if (r & 1) emit("pc", i.pc, g_rec.pc_hit(i.pc), 0);
+	if (r & 2) emit("insn", -1, 0, g_rec.insn_number());
+}
+
+void NesDump_InitPC()
+{
+	if (g_cfg.init_pc < 0) return;
+	X.PC = (uint16)g_cfg.init_pc;
+	X.IRQlow &= ~FCEU_IQRESET;   // do not take the reset vector on the first instruction
+	X.P = 0x24;                  // same power-on flags as nes1's reset (nestest start state)
+	X.S = 0xFD;
 }
 
 void NesDump_Close()
 {
 	g_rec.close(g_frame);
 	g_nesdump_active = 0;
-	g_nesdump_pc_watch = 0;
+	g_nesdump_insn_hook = 0;
 }

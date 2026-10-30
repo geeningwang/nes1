@@ -427,6 +427,7 @@ static int run_dump_mode(const nesdump::Config& cfg)
 	StateDumper dumper(rec);
 	g_dumper = &dumper;
 	dumper.write_rom();
+	dumper.init_pc(cfg.init_pc);
 
 	// Same per-scanline live rendering path as --frametest, so PPU behaviour is identical.
 	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];

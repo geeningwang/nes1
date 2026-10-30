@@ -5,7 +5,7 @@
 #include "types.h"
 
 extern int   g_nesdump_active;     // non-zero while a --dump run is active
-extern int   g_nesdump_pc_watch;   // non-zero if any --dump-pc address is armed
+extern int   g_nesdump_insn_hook;  // non-zero while the per-instruction hook must run
 extern uint8 g_nesdump_apu[0x18];  // last value written to $4000-$4017
 
 // Command line: "<exe> <rom.nes> --dump <outdir> [options]".
@@ -20,4 +20,5 @@ void NesDump_BeginFrame();            // start of FCEUI_Emulate's frame
 void NesDump_EndFrame();              // frame fully emulated
 void NesDump_BeginScanline(int sl);   // CPU window of visible scanline sl starts
 void NesDump_EndScanline(int sl);     // all work for visible scanline sl is done
-void NesDump_CheckPC(unsigned pc);    // before the instruction at pc executes
+void NesDump_Insn();                  // before every instruction executes
+void NesDump_InitPC();                // apply --init-pc (after the game is loaded)

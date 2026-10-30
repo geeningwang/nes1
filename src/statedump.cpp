@@ -14,6 +14,22 @@ StateDumper* g_dumper = nullptr;
 // Friend of cpu_6502 / ppu_2c02 / apu_2a03: copies their private state into the shared dump struct.
 struct NesDumpAccess {
 	static unsigned short pc() { return cpu.rpc; }
+	// --init-pc: the nestest start state (PC given, P=$24, S=$FD).
+	static void set_pc(unsigned short pc) { cpu.rpc = pc; cpu.rp = 0x24; cpu.rsp = 0xFD; }
+
+	// The opcode at PC as the contract defines it: RAM mirrors for $0000-$1FFF, flat memory otherwise.
+	static unsigned char opcode()
+	{
+		unsigned short a = cpu.rpc;
+		return a < 0x2000 ? cpu.mem[a & 0x7FF] : cpu.mem[a];
+	}
+
+	static void fill_insn(nesdump::Insn& i)
+	{
+		i.pc = cpu.rpc;  i.op = opcode();
+		i.a = cpu.ra;  i.x = cpu.rx;  i.y = cpu.ry;  i.s = cpu.rsp;  i.p = cpu.rp;
+		i.cycles = cpu.cycle;
+	}
 
 	static void fill(nesdump::State& s)
 	{
@@ -34,10 +50,11 @@ struct NesDumpAccess {
 		memcpy(s.oam, ppu.oam, 0x100);
 		s.chr = ppu.mem;
 		s.prg = cpu.mem + 0x8000;
+		s.fb  = ppu.fb_idx;
 	}
 };
 
-void StateDumper::emit(const char* event, int pc_trigger, int pc_hit)
+void StateDumper::emit(const char* event, int pc_trigger, int pc_hit, int insn_no)
 {
 	nesdump::State s;
 	memset(&s, 0, sizeof(s));
@@ -46,6 +63,7 @@ void StateDumper::emit(const char* event, int pc_trigger, int pc_hit)
 	s.scanline = scanline;
 	s.pc_trigger = pc_trigger;
 	s.pc_hit = pc_hit;
+	s.insn_no = insn_no;
 	NesDumpAccess::fill(s);
 	rec.write_event(s);
 }
@@ -58,23 +76,33 @@ bool StateDumper::write_rom()
 	return rec.write_rom(s);
 }
 
-void StateDumper::check_pc()
+void StateDumper::on_instruction()
 {
-	unsigned short pc = NesDumpAccess::pc();
-	if (rec.want_pc(pc, frame))
-		emit("pc", pc, rec.pc_hit(pc));
+	nesdump::Insn i;
+	NesDumpAccess::fill_insn(i);
+	i.frame = frame;
+	i.scanline = scanline;
+	int r = rec.insn(i);
+	if (r & 1) emit("pc", i.pc, rec.pc_hit(i.pc), 0);
+	if (r & 2) emit("insn", -1, 0, rec.insn_number());
+}
+
+void StateDumper::init_pc(int pc)
+{
+	if (pc >= 0) NesDumpAccess::set_pc((unsigned short)pc);
 }
 
 void StateDumper::on_scanline_end(int sl)
 {
 	scanline = sl;
 	if (rec.want_scanline(frame, sl))
-		emit("scanline", -1, 0);
+		emit("scanline", -1, 0, 0);
 	scanline = -1;
 }
 
 void StateDumper::on_frame_end()
 {
 	if (rec.want_frame(frame))
-		emit("frame", -1, 0);
+		emit("frame", -1, 0, 0);
+	rec.end_frame();
 }

@@ -156,6 +156,7 @@ unsigned char nes_color_emph[8][64 * 3] = {
 
 ppu_2c02::ppu_2c02()
 {
+	memset(fb_idx, 0, sizeof(fb_idx));
 	mem = new unsigned char[65536];
 	memset(mem, 0, 65536);
 
@@ -529,6 +530,14 @@ void ppu_2c02::render(unsigned char* pScreenBits)
 // writes the CPU made during this scanline's run_ppu(341) call.
 // Palette comes from scanline_pal[sl] (captured BEFORE the CPU run by begin_scanline).
 // Scroll comes from scanline_scroll[sl] (captured AFTER the CPU run by end_scanline).
+// Palette-index byte for the state-dump frame buffer: 6-bit NES colour plus a flag in the
+// top two bits that records the PPUMASK emphasis state (see doc/parity_spec.md).
+static inline unsigned char fb_index_byte(unsigned char nes_color, unsigned emph_idx)
+{
+	unsigned char flag = (emph_idx == 7) ? 0xC0 : (emph_idx ? 0x40 : 0x80);
+	return (unsigned char)((nes_color & 0x3F) | flag);
+}
+
 void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 {
 	if (!fb || sl < 0 || sl >= SCREEN_HEIGHT) return;
@@ -545,6 +554,7 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 			fb[i*4+1] = nes_color_emph[emph_idx][bg*3+1];
 			fb[i*4+2] = nes_color_emph[emph_idx][bg*3+0];
 			fb[i*4+3] = 0;
+			fb_idx[i] = fb_index_byte(bg, emph_idx);
 		}
 		return;
 	}
@@ -568,6 +578,7 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 		fb[i*4+1] = nes_color_emph[emph_idx][pal0*3+1];
 		fb[i*4+2] = nes_color_emph[emph_idx][pal0*3+0];
 		fb[i*4+3] = 0;
+		fb_idx[i] = fb_index_byte(pal0, emph_idx);
 	}
 
 	// bg_opaque[x]: true where a non-transparent BG pixel was drawn (for sprite priority).
@@ -649,6 +660,7 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 				fb[idx*4+1] = nes_color_emph[emph_idx][nes_color*3+1];
 				fb[idx*4+2] = nes_color_emph[emph_idx][nes_color*3+0];
 				fb[idx*4+3] = 0;
+				fb_idx[idx] = fb_index_byte(nes_color, emph_idx);
 				if (opaque) bg_opaque[px] = true;
 			}
 		}
@@ -701,6 +713,7 @@ void ppu_2c02::render_scanline(int sl, unsigned char* fb)
 				fb[idx*4+1] = nes_color_emph[emph_idx][nes_color*3+1];
 				fb[idx*4+2] = nes_color_emph[emph_idx][nes_color*3+0];
 				fb[idx*4+3] = 0;
+				fb_idx[idx] = fb_index_byte(nes_color, emph_idx);
 			}
 		}
 	}

@@ -511,7 +511,7 @@ extern int test; test++;
    IncrementInstructionsCounters();
 
    _PI=_P;
-   if (g_nesdump_pc_watch) NesDump_CheckPC(_PC);  // state dump: before the instruction executes
+   if (g_nesdump_insn_hook) NesDump_Insn();  // state dump: before the instruction executes
    b1=RdMem(_PC);
 
    ADDCYC(CycTable[b1]);

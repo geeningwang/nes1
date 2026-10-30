@@ -150,6 +150,10 @@ private:
 private:
 	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false, unsigned char* bg_opaque = nullptr);
 
+	// Palette-index copy of the rendered frame (one byte per pixel, as the state dump
+	// compares it with FCEUX).  Written by render_scanline() next to the BGRA pixels.
+	unsigned char fb_idx[SCREEN_WIDTH * SCREEN_HEIGHT];
+
 private:
 	unsigned char* mem;
 	unsigned char* oam;
