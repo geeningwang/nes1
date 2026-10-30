@@ -229,10 +229,15 @@ Deviations from the plan as written: phase 2 (scheduling) did not need separate 
 Scanline-level result (3000 frames, every one of the 240 scanlines of every frame, plus every frame and the instruction
 hash at each of those points): all 12 suite entries IDENTICAL (`tool/run_parity.ps1 -Frames 3000 -Level scanline`).
 
+Phase 4 (APU), done for everything the CPU can observe: nes1 now has the FCEUX frame counter and frame IRQ, the IRQ
+line and I-flag latency, `$4015` semantics, length counters and the DMC (fetch stalls, IRQ, loop). Spec O-25..O-29. The
+dump has a new `[APUX]` section (spec 1.9). Decision-gate outcome (p4-schema): the audio-only state of the pulse,
+triangle and noise channels (timers, sequencers, envelopes, sweeps, linear counter, LFSR, mixer) is **not** compared:
+FCEUX computes it lazily at sound-flush time in a form that depends on its sample-rate settings, and the CPU cannot see
+it. Probes: `apu_len_status`, `apu_frame_irq`, `apu_frame_mode`, `apu_dmc_irq` and the random-traffic `apu_fuzz`.
+
 ### Still open
 
-- **Phase 4 (APU)**: not started. nes1 has no frame-counter IRQ, no DMC and no `$4015` IRQ bits; the dump only
-  compares the last value written to each APU register. ROMs that clear the I flag, use DMC or read `$4015` will diverge.
 - **Phase 5 (soak)**: scanline-level runs for all ROMs, and the instruction-level text trace comparison on chosen frames.
 - Unverified in nes1: the unstable illegal opcodes (`$8B`, `$AB`, `$93`, `$9B`, `$9C`, `$9E`, `$9F`), the other KIL
   opcodes, `$6000-$7FFF` work-RAM extent, the exact `268` threshold of O-21, 8x16 sprites, left-column clipping.

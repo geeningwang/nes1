@@ -140,6 +140,9 @@ cpu_6502::cpu_6502()
 	joypad1_shift = 0;
 	data_bus = 0;
 	pending_instruction_cycles = 0;
+	rpi = 0;
+	jammed = false;
+	apu_cycle = 0;
 }
 
 cpu_6502::~cpu_6502()
@@ -422,6 +425,8 @@ void cpu_6502::reset()
 	rpc = 0xc000;	// Trail run nestest.nes, starts from 0xc000
 	rp = 0x24;		// P is kept architectural: bit 5 always 1, bit 4 never stored (spec O-2)
 	rsp = 0xFD;		// FCEUX has S=$FD at the first instruction (spec O-3)
+	rpi = rp;
+	jammed = false;
 
 	rpc = *((unsigned short *)(mem + 0xfffc));
 	data_bus = (unsigned char)(rpc >> 8);   // the reset vector's high byte was the last byte read (spec O-14)
@@ -441,6 +446,20 @@ bool cpu_6502::step(bool log)
 	int instruction_cycles = opcode_items[opcode].cycles;
 	int page_crossed_extra_cycles = opcode_items[opcode].page_crossed_extra_cycles;
 	const char* name = instruction_name[instruction];
+
+	rpi = rp;
+	unsigned char fetched_bus = opcode;   // what the bus holds if the instruction reads nothing else
+	if (apu)
+	{
+		// The APU runs up to the end of the instruction's base cost; page-crossing and other
+		// extras are only counted by the next call (spec O-25).
+		const unsigned int base = (instruction == SKIL) ? 2 : instruction_cycles;
+		const unsigned int target = cycle + base;
+		const unsigned int stall = apu->advance(target - apu_cycle, mem, data_bus);
+		if (stall) fetched_bus = data_bus;   // a DMC fetch leaves its byte on the bus (spec O-25)
+		cycle += stall;
+		apu_cycle = target;
+	}
 
 	if (instruction == UNK)
 	{
@@ -538,7 +557,7 @@ bool cpu_6502::step(bool log)
 	}
 
 	// The last byte fetched for this instruction is on the data bus before any data access.
-	data_bus = *(mem + (unsigned short)(rpc + (instruction_size > 0 ? instruction_size - 1 : 0)));
+	data_bus = instruction_size > 1 ? *(mem + (unsigned short)(rpc + instruction_size - 1)) : fetched_bus;
 
 	// Fetch data
 	unsigned char temp = 0;
@@ -966,6 +985,7 @@ bool cpu_6502::step(bool log)
 	case SNOP:
 		break;
 	case SKIL:
+		jammed = true;
 		break;  // the CPU stays on the opcode; the 257-cycle cost per repeat is in the table (spec O-7)
 	case SANC:
 		ra = ra & temp;
@@ -1184,12 +1204,12 @@ bool cpu_6502::step(bool log)
 	// A branch that is not taken never reads its offset byte: the opcode stays on the bus (a taken
 	// branch costs extra cycles and leaves the offset).
 	if (addressing_mode == ADDR_RELATIVE && instruction_cycles == opcode_items[opcode].cycles)
-		data_bus = opcode;
+		data_bus = fetched_bus;
 	// Zero-page and immediate NOP variants do not read their operand: the opcode stays on the bus
 	// (absolute variants do read; spec O-14).
 	if (instruction == SNOP && (addressing_mode == ADDR_ZERO_PAGE || addressing_mode == ADDR_ZERO_PAGE_X ||
 	                            addressing_mode == ADDR_IMMEDIATE))
-		data_bus = opcode;
+		data_bus = fetched_bus;
 
 	cycle += instruction_cycles;
 	pending_instruction_cycles = 0;
@@ -1216,4 +1236,21 @@ void cpu_6502::nmi()
 	rpc = *((unsigned short*)(mem + 0xFFFA));  // NMI vector at $FFFA/$FFFB
 	data_bus = (unsigned char)(rpc >> 8);
 	cycle += 7;
+	rpi = rp;
+}
+
+bool cpu_6502::irq_pending() const
+{
+	return apu && apu->irq_line() && !(rpi & 0x04) && !jammed;
+}
+
+void cpu_6502::irq()
+{
+	STACK_PUSH_PC();
+	STACK_PUSH(rp & 0xEF);
+	SET_INTERRUPT(1);
+	rpc = *((unsigned short*)(mem + 0xFFFE));
+	data_bus = (unsigned char)(rpc >> 8);
+	cycle += 7;
+	rpi = rp;
 }

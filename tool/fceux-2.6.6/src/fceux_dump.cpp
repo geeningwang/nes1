@@ -31,6 +31,7 @@ extern uint8 *XBuf;   // 256x256 palette-index frame buffer (video.cpp)
 int   g_nesdump_active   = 0;
 int   g_nesdump_insn_hook = 0;
 uint8 g_nesdump_apu[0x18] = { 0 };
+extern void NesDump_ApuState(uint8* out);   // sound.cpp
 
 static int g_ov[4] = { 0, 0, 0, 0 };
 
@@ -80,6 +81,7 @@ static void fill(nesdump::State& s)
 	s.mirror = (vnapage[0] == vnapage[2] && vnapage[0] != vnapage[1]) ? 'V' : 'H';
 
 	memcpy(s.apu, g_nesdump_apu, sizeof(s.apu));
+	NesDump_ApuState(s.apuz);
 	if (RAM) memcpy(s.ram, RAM, 0x800);
 	memcpy(s.nt, NTARAM, 0x800);
 	// Architectural palette RAM: $3F04/$3F08/$3F0C are separate entries, kept in UPALRAM.

@@ -706,6 +706,7 @@ static int RunHeadlessDump(int argc, char *argv[])
 		return 2;
 	}
 	FCEUI_SetRegion(0, 0);   // NTSC
+	FCEUI_Sound(44100);      // sound emulation on (no device is opened): length counters, DMC and IRQs run
 	NesDump_InitPC();
 
 	const int nframes = NesDump_Frames();

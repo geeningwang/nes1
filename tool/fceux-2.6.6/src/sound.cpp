@@ -548,6 +548,30 @@ static INLINE void DMCDMA(void)
  }
 }
 
+// State dump: CPU-visible APU internals, layout "APUX" in doc/parity_spec.md.
+void NesDump_ApuState(uint8 *o)
+{
+ memset(o,0,0x20);
+ for(int x=0;x<4;x++) o[x]=(uint8)lengthcount[x];
+ o[4]=fcnt;
+ o[5]=IRQFrameMode;
+ o[6]=SIRQStat;
+ o[7]=EnabledChannels&0x1F;
+ uint32 h=(uint32)fhcnt;
+ o[8]=h; o[9]=h>>8; o[10]=h>>16; o[11]=h>>24;
+ o[12]=DMCAddress; o[13]=DMCAddress>>8;
+ o[14]=DMCSize; o[15]=DMCSize>>8;
+ o[16]=DMCShift;
+ o[17]=DMCBitCount;
+ o[18]=DMCacc; o[19]=DMCacc>>8;
+ o[20]=DMCPeriod; o[21]=DMCPeriod>>8;
+ o[22]=DMCHaveSample;
+ o[23]=DMCHaveDMA;
+ o[24]=DMCDMABuf;
+ o[25]=RawDALatch;
+ o[26]=DMCFormat;
+}
+
 void FCEU_SoundCPUHook(int cycles)
 {
  fhcnt-=cycles*48;

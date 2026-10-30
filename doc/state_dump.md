@@ -82,6 +82,7 @@ V=2073 T=2000 FINEX=0 W=0 READBUF=00 MIRROR=V
 [BUS]
 DB=02 PPULATCH=00    CPU data-bus latch and PPU I/O latch (open-bus values)
 [APU] 4000-4017      last value written to each register
+[APUX] 0000-001F     CPU-visible APU internals (length counters, frame counter, IRQ flags, DMC); layout in parity_spec.md 1.9
 [RAM] 0000-07FF      CPU RAM
 [NT] 2000-27FF       physical nametable RAM: page A (first 1 KB), page B (second 1 KB)
 [PAL] 3F00-3F1F
@@ -99,7 +100,7 @@ Notes on what is and is not compared:
 
 - `CYCLES` is the total CPU cycle count since power-on, before the instruction at `PC` executes.
 - `V` and `T` are the 15-bit Loopy registers.
-- `[APU]` is a register shadow, not internal channel state (the two emulators model the APU differently). `$4014` and `$4016` are not shadowed and always read 00.
+- `[APU]` is a register shadow; `[APUX]` holds the CPU-visible internals (see `parity_spec.md` 1.9). The audio-only channel state (timers, envelopes, sweeps) is not dumped. `$4014` and `$4016` are not shadowed and always read 00.
 - `[PAL]` is canonical: `$3F10/14/18/1C` show the values of `$3F00/04/08/0C` and entries are masked to 6 bits.
 - `[NT]` is physical RAM, so it does not depend on how each emulator addresses the four logical nametables; `MIRROR` records which mirroring is active.
 - PRG and CHR are checked through the hash lines in every dump, and in full in `rom.txt` (or in every dump with `--rom-every`).
@@ -139,9 +140,9 @@ Both emulators print the catch-up positions of the line renderer to stderr when 
 | Piece | Location |
 |-------|----------|
 | Format, command line, triggers (shared by both emulators) | `common/nesdump.h` |
-| nes1 side: state capture and hooks | `src/statedump.cpp`, `src/statedump.h`, hooks in `src/nes1.cpp` (`run_one_frame`, `run_dump_mode`), APU register shadow in `src/apu.cpp` |
+| nes1 side: state capture and hooks | `src/statedump.cpp`, `src/statedump.h`, hooks in `src/nes1.cpp` (`run_one_frame`, `run_dump_mode`), APU state in `src/apu.cpp` (`apu_2a03::advance`) |
 | FCEUX side: state capture | `tool/fceux-2.6.6/src/fceux_dump.cpp` |
-| FCEUX hooks | `x6502.cpp` (per instruction), `ppu.cpp` (`DoLine`, per scanline), `fceu.cpp` (`FCEUI_Emulate`, per frame), `sound.cpp` (APU shadow), `drivers/win/main.cpp` (`RunHeadlessDump`) |
+| FCEUX hooks | `x6502.cpp` (per instruction), `ppu.cpp` (`DoLine`, per scanline), `fceu.cpp` (`FCEUI_Emulate`, per frame), `sound.cpp` (APU shadow, `NesDump_ApuState`), `drivers/win/main.cpp` (`RunHeadlessDump`) |
 | Comparison tools | `tool/compare_dumps.py`, `tool/find_divergence.py`, `tool/check_nestest.py`, `tool/run_parity.ps1` |
 | Probe ROMs (tiny test programs, generated) | `tool/make_probe_rom.py` -> `test/probe/*.nes` |
 

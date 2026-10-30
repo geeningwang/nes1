@@ -334,6 +334,13 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	auto run_ppu = [&](int ppu_cycles) {
 		ppu_budget += ppu_cycles;
 		while (ppu_budget > 0) {
+			// IRQ entry is checked before every instruction; it costs 7 cycles of the budget (spec O-25).
+			if (cpu.irq_pending()) {
+				cpu.irq();
+				if (audio_samples) apu.tick_n(7, *audio_samples);
+				ppu_budget -= 3 * 7;
+				if (ppu_budget <= 0) break;
+			}
 			if (g_dumper) g_dumper->on_instruction();
 			unsigned int before = cpu.cycle;
 			cpu.step(false);

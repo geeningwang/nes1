@@ -51,6 +51,19 @@ struct NesDumpAccess {
 		s.mirror = ppu.mirror_vertical ? 'V' : 'H';
 
 		memcpy(s.apu, apu.reg_shadow, sizeof(s.apu));
+		memset(s.apuz, 0, sizeof(s.apuz));
+		s.apuz[0] = apu.pulse[0].length;  s.apuz[1] = apu.pulse[1].length;
+		s.apuz[2] = apu.tri.length;       s.apuz[3] = apu.noise.length;
+		s.apuz[4] = apu.fcnt;  s.apuz[5] = apu.irq_mode;  s.apuz[6] = apu.sirq;
+		s.apuz[7] = apu.reg_shadow[0x15] & 0x1F;
+		for (int k = 0; k < 4; ++k) s.apuz[8 + k] = (unsigned char)((unsigned)apu.fhcnt >> (8 * k));
+		s.apuz[12] = (unsigned char)apu.dmc_addr;  s.apuz[13] = (unsigned char)(apu.dmc_addr >> 8);
+		s.apuz[14] = (unsigned char)apu.dmc_size;  s.apuz[15] = (unsigned char)(apu.dmc_size >> 8);
+		s.apuz[16] = apu.dmc_shift;  s.apuz[17] = apu.dmc_bits;
+		s.apuz[18] = (unsigned char)apu.dmc_acc;     s.apuz[19] = (unsigned char)(apu.dmc_acc >> 8);
+		s.apuz[20] = (unsigned char)apu.dmc_period;  s.apuz[21] = (unsigned char)(apu.dmc_period >> 8);
+		s.apuz[22] = apu.dmc_have_sample;  s.apuz[23] = apu.dmc_have_dma;
+		s.apuz[24] = apu.dmc_buf;  s.apuz[25] = apu.dmc_dac;  s.apuz[26] = apu.dmc_format;
 		memcpy(s.ram, cpu.mem, 0x800);
 		memcpy(s.nt, ppu.mem + 0x2000, 0x800);
 		memcpy(s.pal, ppu.mem + 0x3F00, 0x20);

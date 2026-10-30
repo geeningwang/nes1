@@ -134,6 +134,16 @@ public:
     void write(unsigned short addr, unsigned char val);
     unsigned char read_status();
 
+    // Advance the CPU-visible APU state (frame counter, length counters, DMC) by the given
+    // number of CPU cycles.  Called by the CPU once per instruction, before it executes, with
+    // the cycles accumulated since the previous call plus the instruction's base cost
+    // (spec O-25).  mem is the CPU address space (for DMC fetches); bus receives the DMA
+    // byte.  Returns the CPU cycles stolen by a DMC fetch.
+    unsigned int advance(unsigned int cycles, const unsigned char* mem, unsigned char& bus);
+
+    // Level of the IRQ line driven by the frame counter and the DMC.
+    bool irq_line() const { return (sirq & 0xC0) != 0; }
+
     // Call every CPU cycle. Returns true when a new audio sample is ready.
     // sample_out receives the mixed 16-bit sample when ready.
     bool tick(short& sample_out);
@@ -142,7 +152,9 @@ public:
     void tick_n(unsigned int cycles, std::vector<short>& buf);
 
 private:
-    void tick_frame_sequencer();
+    void frame_update();
+    void frame_clock(unsigned char step);
+    void dmc_prepare();
     void clock_quarter_frame();   // envelope + triangle linear
     void clock_half_frame();      // length + sweep (also calls quarter)
     short mix() const;
@@ -154,11 +166,22 @@ private:
     TriangleChannel tri;
     NoiseChannel   noise;
 
-    // Frame sequencer
-    unsigned int   frame_cycles;   // CPU cycles since last frame-seq step
-    unsigned char  frame_step;     // 0-3 (4-step mode only for now)
-    bool           frame_irq_inhibit;
-    bool           frame_mode;     // 0=4-step, 1=5-step
+    // Frame sequencer: one step every 7457.5 CPU cycles, counted in 1/48 cycle units.
+    static constexpr int FRAME_STEP_UNITS = 14915 * 24;
+    int            fhcnt;          // time left until the next step
+    unsigned char  fcnt;           // next step, 0-3
+    unsigned char  irq_mode;       // ($4017 >> 6): bit 0 = IRQ inhibit, bit 1 = 5-step mode
+    unsigned char  sirq;           // bit 6 = frame IRQ flag, bit 7 = DMC IRQ flag
+
+    // DMC
+    unsigned char  dmc_format;     // $4010
+    unsigned char  dmc_dac;        // output level
+    unsigned char  dmc_addr_latch, dmc_size_latch;
+    unsigned int   dmc_addr;       // 0..0x7FFF, CPU address is $8000 + dmc_addr
+    int            dmc_size;       // bytes left
+    unsigned char  dmc_shift, dmc_bits, dmc_buf;
+    bool           dmc_have_sample, dmc_have_dma;
+    int            dmc_acc, dmc_period;
 
     // Sample generation
     // NES CPU runs at ~1,789,773 Hz; target 44100 Hz

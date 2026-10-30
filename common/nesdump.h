@@ -61,6 +61,7 @@ struct State {
 	uint8_t  ppu_latch;       // PPU I/O latch ("open bus" of the PPU registers)
 
 	uint8_t  apu[0x18];       // last value written to $4000-$4017 (0 if never written)
+	uint8_t  apuz[0x20];      // CPU-visible APU internals, see doc/parity_spec.md "APUX layout"
 
 	uint8_t  ram[0x800];      // CPU RAM $0000-$07FF
 	uint8_t  nt[0x800];       // physical nametable RAM: page A (0-3FF), page B (400-7FF)
@@ -447,7 +448,12 @@ private:
 		n = 0;
 		le(b, n, s.db, 1); le(b, n, s.ppu_latch, 1);
 		h.bus = hash64(b, (size_t)n);
-		h.apu = hash64(s.apu, sizeof(s.apu));
+		{
+			uint8_t ab[sizeof(s.apu) + sizeof(s.apuz)];
+			memcpy(ab, s.apu, sizeof(s.apu));
+			memcpy(ab + sizeof(s.apu), s.apuz, sizeof(s.apuz));
+			h.apu = hash64(ab, sizeof(ab));
+		}
 		h.ram = hash64(s.ram, sizeof(s.ram));
 		h.nt  = hash64(s.nt, sizeof(s.nt));
 		h.pal = hash64(pal, 0x20);
@@ -498,6 +504,7 @@ private:
 		        s.v & 0x7FFF, s.t & 0x7FFF, s.fine_x, s.w, s.readbuf, s.mirror);
 		fprintf(f, "[BUS]\nDB=%02X PPULATCH=%02X\n", s.db, s.ppu_latch);
 		put_hex(f, "APU", 0x4000, s.apu, 0x18);
+		put_hex(f, "APUX", 0x0000, s.apuz, 0x20);
 		put_hex(f, "RAM", 0x0000, s.ram, 0x800);
 		put_hex(f, "NT", 0x2000, s.nt, 0x800);
 		put_hex(f, "PAL", 0x3F00, pal, 0x20);

@@ -15,7 +15,7 @@ import os
 import re
 import sys
 
-HEX_SECTIONS = ("APU", "RAM", "NT", "PAL", "OAM", "CHR", "FB", "PRG")
+HEX_SECTIONS = ("APU", "APUX", "RAM", "NT", "PAL", "OAM", "CHR", "FB", "PRG")
 
 
 def parse_dump(path):

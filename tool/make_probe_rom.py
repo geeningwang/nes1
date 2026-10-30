@@ -367,6 +367,159 @@ irq:
 done:
     JMP done
 """ + STUBS + vectors()),
+    # Length counter of pulse 1 (length 2): $4015 read about every 1300 cycles, logged to $0300.
+    "apu_len_status": ("$4015 length status decays with the frame counter", PREAMBLE + """
+    LDA #$01
+    STA $4015
+    LDA #$18
+    STA $4003
+    LDX #0
+rd:
+    LDA $4015
+    STA $0300,X
+    LDY #$FF
+dl:
+    DEY
+    BNE dl
+    INX
+    CPX #40
+    BNE rd
+done:
+    JMP done
+""" + "nmi:\n    RTI\nirq:\n    RTI\n" + vectors()),
+    # Frame-counter IRQ (enabled by default): I flag cleared, handler acknowledges through $4015.
+    "apu_frame_irq": ("APU frame IRQ timing", PREAMBLE + """
+    CLI
+spin:
+    NOP
+    JMP spin
+nmi:
+    RTI
+irq:
+    PHA
+    LDA $4015
+    STA $0301
+    INC $0300
+    PLA
+    RTI
+""" + vectors()),
+    # Frame IRQ inhibited, then 5-step mode.
+    "apu_frame_mode": ("$4017 inhibit and 5-step mode", PREAMBLE + """
+    LDA #$40
+    STA $4017
+    CLI
+    LDY #0
+w1:
+    LDX #0
+w2:
+    DEX
+    BNE w2
+    DEY
+    BNE w1
+    LDA #$80
+    STA $4017
+    LDA $4015
+    STA $0302
+spin:
+    JMP spin
+nmi:
+    RTI
+irq:
+    INC $0300
+    LDA $4015
+    STA $0301
+    RTI
+""" + vectors()),
+    # DMC: 17 bytes at the slowest rate with its IRQ enabled.
+    "apu_dmc_irq": ("DMC sample, DMA stalls and DMC IRQ", PREAMBLE + """
+    LDA #$80
+    STA $4010
+    LDA #$00
+    STA $4012
+    LDA #$01
+    STA $4013
+    LDA #$10
+    STA $4015
+    LDA $4015
+    STA $0302
+    CLI
+spin:
+    NOP
+    JMP spin
+nmi:
+    RTI
+irq:
+    LDA $4015
+    STA $0301
+    LDA #$00
+    STA $4010
+    INC $0300
+    RTI
+""" + vectors()),
+    # Pseudo-random APU register writes at pseudo-random times, with the IRQ line live.  Checks the
+    # frame counter, length counters, DMC and the I-flag latency together; the dump's APU/APUX state
+    # and the instruction chain hash expose any difference.  SEED picks the sequence.
+    "apu_fuzz": ("random APU register traffic with IRQs", PREAMBLE + """
+    LDA #$A5
+    STA $00
+    LDA #$3C
+    STA $01
+    CLI
+loop:
+    JSR rnd
+    AND #$0F
+    TAY
+    LDX regtab,Y
+    JSR rnd
+    AND andtab,Y
+    STA $4000,X
+    JSR rnd
+    AND #$3F
+    TAY
+dl:
+    DEY
+    BNE dl
+    JSR rnd
+    AND #$03
+    BNE skip1
+    LDA $4015
+    EOR $02
+    STA $02
+skip1:
+    JSR rnd
+    AND #$07
+    BNE loop
+    PHP
+    PLA
+    EOR #$04
+    PHA
+    PLP
+    JMP loop
+rnd:
+    INC $01
+    LDA $00
+    ASL A
+    BCC r1
+    EOR #$1D
+r1:
+    STA $00
+    EOR $01
+    RTS
+regtab:
+    .byte $00,$03,$08,$0B,$0C,$0F,$10,$11,$12,$13,$15,$15,$17,$17,$10,$13
+andtab:
+    .byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$BF,$BF,$FF,$FF
+nmi:
+    RTI
+irq:
+    PHA
+    LDA $4015
+    EOR $04
+    STA $04
+    INC $03
+    PLA
+    RTI
+""" + vectors()),
     # A KIL (JAM) opcode: observes what the CPU does when it halts.
     "cpu_kil": ("KIL/JAM opcode $02", PREAMBLE + """
     LDA #$77

@@ -189,8 +189,10 @@ unsigned char NoiseChannel::output() const
 // apu_2a03
 // ─────────────────────────────────────────
 apu_2a03::apu_2a03()
-    : frame_cycles(0), frame_step(0), frame_irq_inhibit(false),
-      frame_mode(false), sample_accum(0.0)
+    : fhcnt(FRAME_STEP_UNITS), fcnt(0), irq_mode(0), sirq(0),
+      dmc_format(0), dmc_dac(0), dmc_addr_latch(0), dmc_size_latch(0), dmc_addr(0), dmc_size(0),
+      dmc_shift(0), dmc_bits(0), dmc_buf(0), dmc_have_sample(false), dmc_have_dma(false),
+      dmc_acc(1), dmc_period(428), sample_accum(0.0)
 {
     memset(reg_shadow, 0, sizeof(reg_shadow));
     pulse[0] = PulseChannel{};
@@ -218,15 +220,31 @@ void apu_2a03::write(unsigned short addr, unsigned char val)
         if (!pulse[1].enabled) pulse[1].length = 0;
         if (!tri.enabled)      tri.length = 0;
         if (!noise.enabled)    noise.length = 0;
+        if (val & 0x10) { if (!dmc_size) dmc_prepare(); }
+        else dmc_size = 0;
+        sirq &= ~0x80;
     }
+    else if (addr == 0x4010)
+    {
+        static const int DMC_PERIOD[16] = { 428, 380, 340, 320, 286, 254, 226, 214,
+                                            190, 160, 142, 128, 106, 84, 72, 54 };
+        dmc_period = DMC_PERIOD[val & 0xF];
+        if (!(val & 0x80)) sirq &= ~0x80;
+        dmc_format = val;
+    }
+    else if (addr == 0x4011) dmc_dac = val & 0x7F;
+    else if (addr == 0x4012) dmc_addr_latch = val;
+    else if (addr == 0x4013) dmc_size_latch = val;
     else if (addr == 0x4017)
     {
-        frame_mode = (val >> 7) & 1;
-        frame_irq_inhibit = (val >> 6) & 1;
-        frame_cycles = 0;
-        frame_step = 0;
-        if (frame_mode)
-            clock_half_frame();  // 5-step mode: immediately clock on write
+        const unsigned char mode = (val & 0xC0) >> 6;
+        fcnt = 0;
+        if (mode & 2)
+            frame_update();   // 5-step mode clocks immediately (with the previous mode's IRQ rule)
+        fcnt = 1;
+        fhcnt = FRAME_STEP_UNITS;
+        sirq &= ~0x40;
+        irq_mode = mode;
     }
 }
 
@@ -237,7 +255,79 @@ unsigned char apu_2a03::read_status()
     if (pulse[1].length > 0) s |= 0x02;
     if (tri.length > 0)      s |= 0x04;
     if (noise.length > 0)    s |= 0x08;
+    if (dmc_size > 0)        s |= 0x10;
+    s |= sirq;
+    sirq &= ~0x40;
     return s;
+}
+
+void apu_2a03::dmc_prepare()
+{
+    dmc_addr = 0x4000 + ((unsigned int)dmc_addr_latch << 6);
+    dmc_size = (dmc_size_latch << 4) + 1;
+}
+
+void apu_2a03::frame_update()
+{
+    if (fcnt == 0 && !(irq_mode & 3))
+        sirq |= 0x40;
+    if (fcnt == 3 && (irq_mode & 2))
+        fhcnt += FRAME_STEP_UNITS;
+    frame_clock(fcnt);
+    fcnt = (fcnt + 1) & 3;
+}
+
+void apu_2a03::frame_clock(unsigned char step)
+{
+    if (!(step & 1)) clock_half_frame();   // length counters and sweeps
+    else             clock_quarter_frame();
+}
+
+unsigned int apu_2a03::advance(unsigned int cycles, const unsigned char* mem, unsigned char& bus)
+{
+    unsigned int stall = 0;
+
+    fhcnt -= (int)cycles * 48;
+    if (fhcnt <= 0)
+    {
+        frame_update();
+        fhcnt += FRAME_STEP_UNITS;
+    }
+
+    // DMC sample fetch: one byte per call, stealing 4 CPU cycles.
+    if (dmc_size && !dmc_have_dma)
+    {
+        stall = 4;
+        dmc_buf = mem[0x8000 + dmc_addr];
+        bus = dmc_buf;
+        dmc_have_dma = true;
+        dmc_addr = (dmc_addr + 1) & 0x7FFF;
+        if (--dmc_size == 0)
+        {
+            if (dmc_format & 0x40)      dmc_prepare();
+            else if (dmc_format & 0x80) sirq |= 0x80;
+        }
+    }
+
+    dmc_acc -= (int)cycles;
+    while (dmc_acc <= 0)
+    {
+        if (dmc_have_sample)
+        {
+            unsigned char old = dmc_dac;
+            dmc_dac += ((dmc_shift & 1) << 2) - 2;
+            if (dmc_dac & 0x80) dmc_dac = old;
+        }
+        dmc_acc += dmc_period;
+        dmc_bits = (dmc_bits + 1) & 7;
+        dmc_shift >>= 1;
+        if (dmc_bits == 0)
+        {
+            if (!dmc_have_dma) dmc_have_sample = false;
+            else { dmc_have_sample = true; dmc_shift = dmc_buf; dmc_have_dma = false; }
+        }
+    }
+    return stall;
 }
 
 void apu_2a03::clock_quarter_frame()
@@ -257,40 +347,6 @@ void apu_2a03::clock_half_frame()
     noise.tick_length();
     pulse[0].tick_sweep();
     pulse[1].tick_sweep();
-}
-
-void apu_2a03::tick_frame_sequencer()
-{
-    // 4-step mode: clocks at ~3728, ~7456, ~11186, ~14914 CPU cycles
-    // We approximate each step at 7457 CPU cycles (half-frame = 14914/2)
-    // Steps: Q  H  Q  HF   (Q=quarter, H=half, F=irq)
-    static const unsigned int STEP_CYCLES_4[4] = { 7457, 7457, 7457, 7457 };
-    // 5-step mode: Q H Q - H  (step 3 is skipped)
-    static const unsigned int STEP_CYCLES_5[5] = { 7457, 7457, 7457, 7457, 7457 };
-
-    unsigned int step_len = frame_mode ? STEP_CYCLES_5[frame_step % 5]
-                                       : STEP_CYCLES_4[frame_step % 4];
-
-    if (frame_cycles >= step_len)
-    {
-        frame_cycles -= step_len;
-
-        if (!frame_mode) {
-            // 4-step: steps 0,2 = quarter; steps 1,3 = half
-            if (frame_step == 1 || frame_step == 3)
-                clock_half_frame();
-            else
-                clock_quarter_frame();
-            frame_step = (frame_step + 1) & 3;
-        } else {
-            // 5-step: steps 0,2,4 = quarter; steps 1,3 = half (step 3 skipped for irq)
-            if (frame_step == 1 || frame_step == 4)
-                clock_half_frame();
-            else if (frame_step != 3)
-                clock_quarter_frame();
-            frame_step = (frame_step + 1) % 5;
-        }
-    }
 }
 
 short apu_2a03::mix() const
@@ -329,10 +385,6 @@ bool apu_2a03::tick(short& sample_out)
     }
     // Triangle timer: every CPU cycle
     tri.tick_timer();
-
-    // Frame sequencer
-    ++frame_cycles;
-    tick_frame_sequencer();
 
     // Sample generation
     sample_accum += 1.0;

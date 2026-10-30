@@ -19,6 +19,8 @@ public:
 	void reset();
 	bool step(bool log);
 	void nmi();
+	bool irq_pending() const;   // IRQ line asserted, I flag (as of the previous instruction) clear, CPU not jammed
+	void irq();
 
 	// Direct RAM access for automated testing (bypasses bus mapping)
 	void           set_mem_byte(unsigned short addr, unsigned char val);
@@ -59,4 +61,7 @@ private:
 	ppu_2c02* ppu;
 	apu_2a03* apu;
 	unsigned char pending_instruction_cycles;
+	unsigned char rpi;          // P as it was when the previous instruction started: the I flag the IRQ check sees
+	bool          jammed;       // executed a KIL opcode
+	unsigned int  apu_cycle;    // CPU cycle up to which the APU has been advanced
 };
