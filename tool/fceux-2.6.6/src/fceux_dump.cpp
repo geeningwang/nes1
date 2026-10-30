@@ -57,6 +57,7 @@ bool NesDump_Open(int argc, char** argv, char* errbuf, int errlen)
 	return true;
 }
 
+int NesDump_Frame() { return g_frame; }
 const char* NesDump_RomPath() { return g_cfg.rom.c_str(); }
 int         NesDump_Frames()  { return g_cfg.frames; }
 

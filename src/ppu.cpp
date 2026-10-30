@@ -157,7 +157,8 @@ unsigned char nes_color_emph[8][64 * 3] = {
 ppu_2c02::ppu_2c02()
 {
 	memset(fb_idx, 0, sizeof(fb_idx));
-	rl_on = false;  rl_sl = 0;  rl_first = 0;  rl_tofix = false;  rl_origin = 0;
+	rl_on = false;  rl_sl = 0;  rl_first = 0;  rl_px = 0;  rl_tofix = false;  rl_origin = 0;
+	memset(pend_col, 0, sizeof(pend_col));  memset(pend_op, 0, sizeof(pend_op));  memset(pend_valid, 0, sizeof(pend_valid));
 	memset(ln_col, 0, sizeof(ln_col));    memset(ln_op, 0, sizeof(ln_op));
 	memset(spr_flag, 0, sizeof(spr_flag)); memset(spr_col, 0, sizeof(spr_col));
 	memset(nxt_flag, 0, sizeof(nxt_flag)); memset(nxt_c2, 0, sizeof(nxt_c2)); memset(nxt_pal, 0, sizeof(nxt_pal));
@@ -997,8 +998,10 @@ void ppu_2c02::line_begin(int sl, long long origin_dots, int lastpixel)
 	rl_on     = true;
 	rl_sl     = sl;
 	rl_first  = 0;
+	rl_px     = 0;
 	rl_tofix  = false;
 	rl_origin = origin_dots;
+	memset(pend_valid, 0, sizeof(pend_valid));
 	memset(ln_col, 0, sizeof(ln_col));
 	memset(ln_op, 0, sizeof(ln_op));
 	line_sync(lastpixel);   // the dots already consumed when the line starts count as well
@@ -1013,14 +1016,28 @@ void ppu_2c02::sync_from_cpu()
 	line_sync(lp < 0 ? 0 : lp);
 }
 
+int g_dbg_frame = 0;
 void ppu_2c02::line_sync(int lastpixel)
 {
 	if (!rl_on) return;
+	{ static int df = -2, dl = -2; if (df == -2) { char eb[64] = ""; size_t en = 0; getenv_s(&en, eb, sizeof(eb), "NESDBG"); const char* e = en ? eb : nullptr; df = e ? atoi(e) : -1; dl = (e && strchr(e, ':')) ? atoi(strchr(e, ':') + 1) : -1; }
+	  if (df == g_dbg_frame && dl == rl_sl) fprintf(stderr, "NES1 sync f=%d sl=%d lastpixel=%d first=%d mask=%02X ctrl=%02X fx=%d\n", g_dbg_frame, rl_sl, lastpixel, rl_first, reg_mask, reg_ctrl, fine_x); }
 	int lasttile = lastpixel >> 3;
 	if (lasttile > 34) lasttile = 34;
 	if (lasttile - rl_first <= 0) return;
-	for (int c = rl_first; c < lasttile; ++c)
-		bg_render_tile(c);
+	// Background enabled: tile i is fetched in iteration i (advancing V, colours resolved now) and the
+	// pixels of the tile fetched two iterations earlier are written at the write pointer.
+	// Background disabled: one backdrop tile per iteration is written at the write pointer, so the
+	// pointer lags the fetch count by two tiles only if enabled tiles were written before.
+	for (int i = rl_first; i < lasttile; ++i) {
+		if (reg_mask & 0x08) {
+			bg_fetch_tile(i);
+			if (i >= 2) { bg_output_tile(i - 2, rl_px); ++rl_px; }
+		} else {
+			bg_fill_tile(rl_px);
+			++rl_px;
+		}
+	}
 	rl_first = lasttile;
 	// A catch-up late in the line (spec O-21) performs the pending Y increment now, with the
 	// register state of this moment, so the end-of-line step finds nothing left to do.
@@ -1031,13 +1048,14 @@ void ppu_2c02::line_sync(int lastpixel)
 	check_sprite_hit(lastpixel);
 }
 
-// One 8-pixel background tile (index c counts from the line origin), drawn with the live register state.
-// Rendering a tile advances V's coarse X, which is why V changes while a line is drawn.
-void ppu_2c02::bg_render_tile(int c)
+// Fetch of background tile c (counted from the line origin) with the live register state: the
+// pattern, attribute and colours are read now and V's coarse X advances, which is why V changes
+// while a line is drawn.  The pixels are written later by bg_output_tile().
+void ppu_2c02::bg_fetch_tile(int c)
 {
 	unsigned char backdrop = (unsigned char)(ppu_mem_read(0x3F00) & 0x3F);
-	const int fx = fine_x;
-	if (reg_mask & 0x08) {
+	pend_valid[c] = true;
+	{
 		unsigned short a = v;
 		int cx = a & 31, cy = (a >> 5) & 31, nt = (a >> 10) & 3, fy = (a >> 12) & 7;
 		unsigned short ntaddr = (unsigned short)(0x2000 | (nt << 10) | (cy << 5) | cx);
@@ -1050,21 +1068,39 @@ void ppu_2c02::bg_render_tile(int c)
 		unsigned char p0 = mem[base + name * 16 + fy];
 		unsigned char p1 = mem[base + name * 16 + fy + 8];
 		for (int i = 0; i < 8; ++i) {
-			int x = c * 8 + i - fx;
-			if (x < 0 || x >= SCREEN_WIDTH) continue;
 			unsigned char c2 = (unsigned char)(((p0 >> (7 - i)) & 1) | (((p1 >> (7 - i)) & 1) << 1));
-			if (c2) { ln_col[x] = (unsigned char)(ppu_mem_read((unsigned short)(0x3F00 + ((hi << 2) | c2))) & 0x3F); ln_op[x] = 1; }
-			else    { ln_col[x] = backdrop; ln_op[x] = 0; }
+			if (c2) { pend_col[c][i] = (unsigned char)(ppu_mem_read((unsigned short)(0x3F00 + ((hi << 2) | c2))) & 0x3F); pend_op[c][i] = 1; }
+			else    { pend_col[c][i] = backdrop; pend_op[c][i] = 0; }
 		}
 		if ((a & 0x1F) == 0x1F) a ^= 0x041F; else ++a;
 		v = a;
-	} else {
-		for (int i = 0; i < 8; ++i) {
-			int x = c * 8 + i - fx;
-			if (x < 0 || x >= SCREEN_WIDTH) continue;
-			ln_col[x] = backdrop;
-			ln_op[x] = 0;
-		}
+	}
+}
+
+// Writes the pixels of fetched tile t into the line at tile position pos (screen x = 8*pos - fine X).
+void ppu_2c02::bg_output_tile(int t, int pos)
+{
+	const int fx = fine_x;
+	// A tile that was never fetched in this line (the background was off then) shows as backdrop.
+	const unsigned char backdrop = (unsigned char)(ppu_mem_read(0x3F00) & 0x3F);
+	for (int i = 0; i < 8; ++i) {
+		int x = pos * 8 + i - fx;
+		if (x < 0 || x >= SCREEN_WIDTH) continue;
+		ln_col[x] = pend_valid[t] ? pend_col[t][i] : backdrop;
+		ln_op[x]  = pend_valid[t] ? pend_op[t][i] : 0;
+	}
+}
+
+// Background disabled: the tile position gets the backdrop colour.
+void ppu_2c02::bg_fill_tile(int pos)
+{
+	const unsigned char backdrop = (unsigned char)(ppu_mem_read(0x3F00) & 0x3F);
+	const int fx = fine_x;
+	for (int i = 0; i < 8; ++i) {
+		int x = pos * 8 + i - fx;
+		if (x < 0 || x >= SCREEN_WIDTH) continue;
+		ln_col[x] = backdrop;
+		ln_op[x]  = 0;
 	}
 }
 
@@ -1090,6 +1126,14 @@ void ppu_2c02::line_end256(int sl)
 	if (rl_tofix) {
 		y_increment();
 		rl_tofix = false;
+	}
+	// Flush the tile pipeline: fetched tiles not written yet go to the screen now, or the rest of
+	// the line becomes backdrop when the background is off.
+	if (reg_mask & 0x08) {
+		for (int t = rl_px; t < rl_first; ++t, ++rl_px)
+			bg_output_tile(t, rl_px);
+	} else {
+		while (rl_px < 33) { bg_fill_tile(rl_px); ++rl_px; }
 	}
 	check_sprite_hit(272);
 	rl_on = false;

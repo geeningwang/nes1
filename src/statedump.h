@@ -9,7 +9,7 @@ class StateDumper {
 public:
 	explicit StateDumper(nesdump::Recorder& r) : rec(r), frame(0), scanline(-1) {}
 
-	void begin_frame()           { ++frame; scanline = -1; rec.begin_frame(frame); }
+	void begin_frame()           { ++frame; scanline = -1; rec.begin_frame(frame); extern int g_dbg_frame; g_dbg_frame = frame; }
 	void on_instruction();                                                // before each instruction executes
 	void on_scanline_end(int sl);                                         // all work for visible scanline sl is done
 	void on_frame_end();                                                  // whole frame emulated

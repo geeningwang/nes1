@@ -19,6 +19,7 @@ void        NesDump_Close();
 void NesDump_BeginFrame();            // start of FCEUI_Emulate's frame
 void NesDump_EndFrame();              // frame fully emulated
 void NesDump_BeginScanline(int sl);   // CPU window of visible scanline sl starts
+int  NesDump_Frame();                 // current dump frame number (debug aid)
 void NesDump_SliceEnd(int k);         // after each of the 4 CPU slices of a visible line (debug aid)
 void NesDump_EndScanline(int sl);     // all work for visible scanline sl is done
 void NesDump_Insn();                  // before every instruction executes

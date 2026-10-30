@@ -12,6 +12,7 @@ extern int g_ppu_budget;
 extern int g_line_ov[4];
 
 StateDumper* g_dumper = nullptr;
+extern int g_dbg_frame;
 
 // Friend of cpu_6502 / ppu_2c02 / apu_2a03: copies their private state into the shared dump struct.
 struct NesDumpAccess {

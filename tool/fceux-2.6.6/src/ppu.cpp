@@ -1048,6 +1048,8 @@ void FCEUPPU_LineUpdate(void) {
 #endif
 	if (Pline) {
 		int l = GETLASTPIXEL;
+		if (g_nesdump_active) { static int df = -2, dl = -2; if (df == -2) { const char* e = getenv("NESDBG"); df = e ? atoi(e) : -1; dl = (e && strchr(e, ':')) ? atoi(strchr(e, ':') + 1) : -1; }
+		  if (df == NesDump_Frame() && dl == scanline) fprintf(stderr, "FCEUX sync f=%d sl=%d lastpixel=%d first=%d mask=%02X ctrl=%02X fx=%d\n", df, scanline, l, firsttile, PPU[1], PPU[0], (int)XOffset); }
 		RefreshLine(l);
 	}
 }
