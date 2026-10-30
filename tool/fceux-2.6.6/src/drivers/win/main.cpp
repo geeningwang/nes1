@@ -677,6 +677,50 @@ static BOOL CALLBACK EnumCallbackFCEUXInstantiated(HWND hWnd, LPARAM lParam)
 }
 
 #include "x6502.h"
+#include "../../fceux_dump.h"
+
+// Headless state-dump run: "<exe> <rom.nes> --dump <outdir> [options]" (see doc/state_dump.md).
+// No window, DirectX, sound device or input: load the ROM and emulate N frames from
+// power-on, with the dump hooks in the emulation core writing the requested events.
+static int RunHeadlessDump(int argc, char *argv[])
+{
+	char err[1024];
+	if(!NesDump_Open(argc, argv, err, sizeof(err)))
+	{
+		fprintf(stderr, "error: %s\n", err);
+		return 2;
+	}
+
+	// The DirectDraw init that normally allocates the palette is skipped in headless mode.
+	extern PALETTEENTRY *color_palette;
+	color_palette = (PALETTEENTRY*)calloc(256, sizeof(PALETTEENTRY));
+
+	GetBaseDirectory();
+	CreateDirs();
+	SetDirs();
+
+	if(!FCEUI_LoadGame(NesDump_RomPath(), 1, true))
+	{
+		fprintf(stderr, "error: cannot load ROM %s\n", NesDump_RomPath());
+		NesDump_Close();
+		return 2;
+	}
+	FCEUI_SetRegion(0, 0);   // NTSC
+
+	const int nframes = NesDump_Frames();
+	for(int i = 0; i < nframes; ++i)
+	{
+		uint8 *gfx = 0;
+		int32 *sound = 0;
+		int32 ssize = 0;
+		FCEUI_Emulate(&gfx, &sound, &ssize, 0);
+	}
+
+	NesDump_Close();
+	printf("fceux dump done: %d frames\n", nframes);
+	return 0;
+}
+
 int main(int argc,char *argv[])
 {
 	{
@@ -714,6 +758,9 @@ int main(int argc,char *argv[])
 		do_exit();
 		return 1;
 	}
+
+	if(NesDump_Requested(argc, argv))
+		return RunHeadlessDump(argc, argv);
 
 	ApplyDefaultCommandMapping();
 

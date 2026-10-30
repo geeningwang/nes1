@@ -23,6 +23,7 @@
 #include "fceu.h"
 #include "debug.h"
 #include "sound.h"
+#include "fceux_dump.h"
 #ifdef _S9XLUA_H
 #include "fceulua.h"
 #endif
@@ -510,6 +511,7 @@ extern int test; test++;
    IncrementInstructionsCounters();
 
    _PI=_P;
+   if (g_nesdump_pc_watch) NesDump_CheckPC(_PC);  // state dump: before the instruction executes
    b1=RdMem(_PC);
 
    ADDCYC(CycTable[b1]);

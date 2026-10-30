@@ -34,6 +34,7 @@
 #include "state.h"
 #include "video.h"
 #include "fceux_frameexport.h"
+#include "fceux_dump.h"
 #include "input.h"
 #include "driver.h"
 #include "debug.h"
@@ -1325,6 +1326,8 @@ static void DoLine(void) {
 	}
 
 	int x;
+	const int dump_sl = scanline;   // state dump: visible scanline this call emulates
+	if (g_nesdump_active && dump_sl < 240) NesDump_BeginScanline(dump_sl);
 	uint8 *target = XBuf + ((scanline < 240 ? scanline : 240) << 8);
 	u8* dtarget = XDBuf + ((scanline < 240 ? scanline : 240) << 8);
 
@@ -1408,6 +1411,7 @@ static void DoLine(void) {
 		ResetRL(XBuf + (scanline << 8));
 	}
 	X6502_Run(16);
+	if (g_nesdump_active && dump_sl < 240) NesDump_EndScanline(dump_sl);
 }
 
 #define V_FLIP  0x80

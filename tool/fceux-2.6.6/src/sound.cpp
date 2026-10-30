@@ -23,6 +23,7 @@
 
 #include "fceu.h"
 #include "sound.h"
+#include "fceux_dump.h"
 #include "filter.h"
 #include "state.h"
 #include "wave.h"
@@ -221,6 +222,7 @@ static void SQReload(int x, uint8 V)
 
 static DECLFW(Write_PSG)
 {
+	g_nesdump_apu[A & 0x1F] = V;   // state dump: register shadow
 	A&=0x1F;
 	switch(A)
 	{
@@ -308,6 +310,7 @@ static DECLFW(Write_PSG)
 
 static DECLFW(Write_DMCRegs)
 {
+	g_nesdump_apu[A & 0x1F] = V;   // state dump: register shadow
 	A&=0xF;
 	
 	switch(A)
@@ -350,6 +353,8 @@ static DECLFW(Write_DMCRegs)
 static DECLFW(StatusWrite)
 {
 	int x;
+
+	g_nesdump_apu[A & 0x1F] = V;   // state dump: register shadow
 
     DoSQ1();
     DoSQ2();
@@ -1012,6 +1017,7 @@ static void RDoNoise(void)
 
 DECLFW(Write_IRQFM)
 {
+ g_nesdump_apu[A & 0x1F] = V;   // state dump: register shadow
  V=(V&0xC0)>>6;
  fcnt=0;
  if(V&0x2)

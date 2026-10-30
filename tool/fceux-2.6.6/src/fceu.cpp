@@ -94,6 +94,7 @@ extern void RefreshThrottleFPS();
 #include <ctime>
 
 #include "fceux_frameexport.h"
+#include "fceux_dump.h"
 
 using namespace std;
 
@@ -840,7 +841,11 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 	// Enable per-scanline trace for every frame (data accessible to Lua via ppu.getscanlinedata)
 	FCEUX_EnableScanlineTrace();
 
+	if (g_nesdump_active) NesDump_BeginFrame();
+
 	r = FCEUPPU_Loop(skip);
+
+	if (g_nesdump_active) NesDump_EndFrame();
 
 	FCEUX_DisableScanlineTrace();
 
@@ -859,6 +864,7 @@ void FCEUI_Emulate(uint8 **pXBuf, int32 **SoundBuf, int32 *SoundBufSize, int ski
 	// Uses a static counter that increments every FCEUI_Emulate call.
 	// Export whenever skip < 2 (skip==0: normal, skip==1: no blit; both still run PPU emulation).
 	// skip==2 skips PPU rendering entirely, so we exclude it.
+	if (!g_nesdump_active)   // the legacy export below is replaced by the --dump facility
 	{
 		static int export_framenum = 0;
 		const int export_nframes = 270;
