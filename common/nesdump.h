@@ -330,13 +330,18 @@ public:
 private:
 	std::string join(const std::string& name) const { return cfg_.outdir + "/" + name; }
 
+	// Creates the directory and any missing parents (errors for existing ones are ignored).
 	static void make_dir(const std::string& d)
 	{
+		for (size_t i = 1; i <= d.size(); ++i) {
+			if (i != d.size() && d[i] != '/' && d[i] != '\\') continue;
+			std::string part = d.substr(0, i);
 #ifdef _WIN32
-		_mkdir(d.c_str());
+			_mkdir(part.c_str());
 #else
-		mkdir(d.c_str(), 0777);
+			mkdir(part.c_str(), 0777);
 #endif
+		}
 	}
 
 	// 16 bytes per row, "ADDR: xx xx ..."; one row per line so line diffs point at the address.

@@ -157,17 +157,54 @@ Set-Content C:\work\nes1\tool\fceux-2.6.6\vc\userconfig\scmrev.h @'
 
 The file is a build artifact; do not commit it.
 
-Run both emulators with the same arguments and compare:
+Smoke test the build (no window or desktop is needed; this works from SSH, a service or a startup script):
 
 ```powershell
 $rom = 'C:\work\nes1\test\mappy\Mappy (Japan).nes'
-$a = '--frames','120','--dump-frames','1-120'
-& C:\work\nes1\src\x64\Debug\nes1.exe $rom --dump C:\work\out_nes1 @a
-& C:\work\nes1\tool\fceux-2.6.6\vc\x64\Release\fceux64.exe $rom --dump C:\work\out_fceux @a
-python C:\work\nes1\tool\compare_dumps.py C:\work\out_nes1 C:\work\out_fceux --summary
+$p = Start-Process C:\work\nes1\tool\fceux-2.6.6\vc\x64\Release\fceux64.exe `
+       -ArgumentList "`"$rom`"",'--dump','C:\work\out_fceux','--frames','10','--dump-frames','1-10' -Wait -PassThru -NoNewWindow
+$p.ExitCode                            # 0
+Get-ChildItem C:\work\out_fceux      # 10 frame_f*.txt files + rom.txt, events.txt, run.txt
 ```
 
-Both run to completion in a few seconds, with no window and no desktop session (they work from a service, SSH or a startup script). `compare_dumps.py` needs Python 3; any machine with Python can run it on copies of the two output folders.
+FCEUX prints `fceux dump done: 10 frames` and exits after a few seconds. Launch it with `Start-Process -Wait` as above so the script waits for it and gets its exit code.
+
+## 8. Install Python (for the comparison tool)
+
+`tool\compare_dumps.py` compares two dump folders. It uses only the Python 3 standard library, so the portable "embeddable" Python is enough: no installer, no pip, no PATH change.
+
+```powershell
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip' -OutFile C:\work\python.zip
+Expand-Archive C:\work\python.zip -DestinationPath C:\work\python -Force
+C:\work\python\python.exe --version     # Python 3.12.8
+```
+
+If a full Python 3 is already installed and on the PATH, use that instead.
+
+## 9. Run both emulators and compare
+
+`tool\run_compare.ps1` runs nes1 and the patched FCEUX with identical `--dump` arguments and then runs the comparison, all on the same machine, so the output folders never need to be copied anywhere:
+
+```powershell
+cd C:\work\nes1
+powershell -ExecutionPolicy Bypass -File tool\run_compare.ps1 `
+    -Rom "test\mappy\Mappy (Japan).nes" -Tag mappy `
+    -DumpArgs "--frames 120 --dump-frames 1-120 --dump-scanline-frames 5 --dump-pc C06F --pc-max 5"
+```
+
+- Output goes to `C:\work\<Tag>\nes1` and `C:\work\<Tag>\fceux` (change the root with `-OutRoot`). Existing folders for that tag are replaced.
+- It finds `nes1.exe` at `src\x64\Debug`, `fceux64.exe` at `tool\fceux-2.6.6\vc\x64\Release`, and Python on the PATH or at `C:\work\python\python.exe`. Override with `-Nes1`, `-Fceux`, `-Python`.
+- `-DumpArgs` is split on spaces, so option values must not contain spaces. The options are listed in [state_dump.md](state_dump.md).
+- The report is printed to the console: the first diverging event and a per-field summary. Use `-Max N` to also print the first N differing events in detail.
+- The exit code is 0 if the dumps are identical, 1 if they differ, and 2 if an emulator or a path failed.
+
+To run the steps by hand, or to compare folders from earlier runs:
+
+```powershell
+C:\work\python\python.exe C:\work\nes1\tool\compare_dumps.py C:\work\mappy\nes1 C:\work\mappy\fceux --summary
+```
 
 ## Troubleshooting
 
@@ -180,3 +217,4 @@ Both run to completion in a few seconds, with no window and no desktop session (
 | Frametest produces 0 files | The ROM failed to load; see above. The exit code is still 0, so check the output folder. |
 | FCEUX launches but the Lua script never runs / no output | No interactive desktop session; run it from RDP or the console (step 6). |
 | `C1083: Cannot open include file: 'scmrev.h'` building FCEUX | git is not on the PATH; create `scmrev.h` by hand (step 7). |
+| `run_compare.ps1`: `not found: ...fceux64.exe` / `nes1.exe` / `python.exe` | Build nes1 (step 3), build FCEUX (step 7) or install Python (step 8), or pass the path with `-Nes1`, `-Fceux`, `-Python`. |
