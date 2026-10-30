@@ -92,9 +92,17 @@ public:
 	void write_oam_byte(unsigned char val);   // $2004 write
 
 	// Per-frame PPU address / status evolution (doc/parity_spec.md O-12, O-13).
-	void dot256_updates(int sl);        // visible scanline, dot 256: Y increment of V, sprite overflow
+	void dot256_updates(int sl);        // legacy: Y increment of V and sprite overflow in one step
 	void copy_horizontal_bits();        // visible scanline, dot 262: V's horizontal bits <- T
 	void copy_t_to_v();                 // pre-render line, dot 325: V <- T
+
+	// Lazy line renderer (doc/parity_spec.md O-19).  The CPU time of every PPU register access is
+	// converted to a dot position in the line; the line's background tiles are rendered up to that
+	// point with the register state from before the access.
+	void line_start_frame(long long origin_dots, int overshoot);   // pre-render line, dot 325: line 0 begins
+	void line_next(int sl, long long origin_dots, int overshoot);   // end of the previous line's third slice
+	void line_end256(int sl);           // dot 256: finish the tiles, Y increment, composite the row, evaluate sprites
+	void sync_from_cpu();               // called before every PPU register access
 
 	// Set/clear the vblank flag in PPUSTATUS
 	void set_vblank(bool vb);
@@ -159,6 +167,32 @@ public:
 	unsigned char fb_idx[SCREEN_WIDTH * SCREEN_HEIGHT];
 
 private:
+	void line_begin(int sl, long long origin_dots, int lastpixel);
+	void line_sync(int lastpixel);
+	void bg_render_tile(int c);
+	void check_sprite_hit(int lastpixel);
+	void prepare_sprites(int sl);
+	void resolve_sprites();
+	void y_increment();
+
+	bool          rl_on;          // a visible line is being rendered
+	int           rl_sl;
+	int           rl_first;       // first background tile not yet rendered
+	bool          rl_tofix;       // the end-of-line Y increment of V is still pending
+	long long     rl_origin;      // absolute dot of the line's origin (16 dots before its first pixel)
+	unsigned char ln_col[SCREEN_WIDTH];   // background colour (6-bit) per screen pixel
+	unsigned char ln_op[SCREEN_WIDTH];    // 1 where the background pixel is opaque
+	// Sprite line buffers: "cur" is drawn on the current line, "nxt" is being prepared for the next one.
+	unsigned char spr_flag[SCREEN_WIDTH];   // bit0 sprite pixel present, bit1 behind background
+	unsigned char spr_col[SCREEN_WIDTH];
+	unsigned char nxt_flag[SCREEN_WIDTH];
+	unsigned char nxt_c2[SCREEN_WIDTH];     // 2-bit pattern value
+	unsigned char nxt_pal[SCREEN_WIDTH];    // palette index base (0x10 | attr<<2)
+	int           sphitx;                   // x of sprite 0 on this line, 0x100 if none
+	unsigned char sphitdata;                // opaque-pixel mask of sprite 0's row
+	int           nxt_sphitx;
+	unsigned char nxt_sphitdata;
+
 	void draw_chr(unsigned char* chr, int x, int y, unsigned char color_bit23, unsigned char* pScreenBits, bool is_sprite = false, unsigned char* bg_opaque = nullptr);
 
 private:

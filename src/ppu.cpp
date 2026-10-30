@@ -157,6 +157,11 @@ unsigned char nes_color_emph[8][64 * 3] = {
 ppu_2c02::ppu_2c02()
 {
 	memset(fb_idx, 0, sizeof(fb_idx));
+	rl_on = false;  rl_sl = 0;  rl_first = 0;  rl_tofix = false;  rl_origin = 0;
+	memset(ln_col, 0, sizeof(ln_col));    memset(ln_op, 0, sizeof(ln_op));
+	memset(spr_flag, 0, sizeof(spr_flag)); memset(spr_col, 0, sizeof(spr_col));
+	memset(nxt_flag, 0, sizeof(nxt_flag)); memset(nxt_c2, 0, sizeof(nxt_c2)); memset(nxt_pal, 0, sizeof(nxt_pal));
+	sphitx = 0x100;  sphitdata = 0;  nxt_sphitx = 0x100;  nxt_sphitdata = 0;
 	mem = new unsigned char[65536];
 	memset(mem, 0, 65536);
 
@@ -729,6 +734,7 @@ bool ppu_2c02::nmi_enabled()
 unsigned char ppu_2c02::cpu_read(unsigned short addr)
 {
 	addr = 0x2000 + (addr & 0x0007);
+	sync_from_cpu();   // the picture up to this point is drawn before the register is read
 
 	switch (addr)
 	{
@@ -759,6 +765,10 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 {
 	addr = 0x2000 + (addr & 0x0007);
+	// The picture up to this point is drawn with the old state before a control, mask, scroll or
+	// address write.  Data writes ($2007) and OAM writes do not trigger a catch-up (spec O-19).
+	if (addr == 0x2000 || addr == 0x2001 || addr == 0x2005 || addr == 0x2006)
+		sync_from_cpu();
 	io_latch = val;   // every write to a PPU register drives the latch
 
 	switch (addr)
@@ -943,6 +953,218 @@ void ppu_2c02::copy_t_to_v()
 {
 	if ((reg_mask & 0x18) == 0) return;
 	v = t;
+}
+
+// ── Lazy line renderer (doc/parity_spec.md O-19) ───────────────────────────────
+
+void ppu_2c02::y_increment()
+{
+	if ((reg_mask & 0x18) == 0) return;   // nothing happens while rendering is off
+	unsigned short a = v;
+	if ((a & 0x7000) != 0x7000) {
+		a += 0x1000;                      // fine Y
+	} else {
+		a &= (unsigned short)~0x7000;
+		int y = (a & 0x03E0) >> 5;        // coarse Y
+		if (y == 29)      { y = 0; a ^= 0x0800; }
+		else if (y == 31) { y = 0; }
+		else              { ++y; }
+		a = (unsigned short)((a & ~0x03E0) | (y << 5));
+	}
+	v = a;
+}
+
+// Line 0 begins at dot 325 of the pre-render line: no sprites are drawn on it.
+void ppu_2c02::line_start_frame(long long origin_dots, int overshoot)
+{
+	memset(spr_flag, 0, sizeof(spr_flag));
+	memset(nxt_flag, 0, sizeof(nxt_flag));
+	sphitx = 0x100;
+	nxt_sphitx = 0x100;
+	line_begin(0, origin_dots, overshoot);
+}
+
+// The next visible line begins at the end of the previous line's third slice: the sprites prepared
+// at dot 256 get their colours now and become the sprites of this line.
+void ppu_2c02::line_next(int sl, long long origin_dots, int overshoot)
+{
+	resolve_sprites();
+	line_begin(sl, origin_dots, overshoot);
+}
+
+void ppu_2c02::line_begin(int sl, long long origin_dots, int lastpixel)
+{
+	rl_on     = true;
+	rl_sl     = sl;
+	rl_first  = 0;
+	rl_tofix  = false;
+	rl_origin = origin_dots;
+	memset(ln_col, 0, sizeof(ln_col));
+	memset(ln_op, 0, sizeof(ln_op));
+	line_sync(lastpixel);   // the dots already consumed when the line starts count as well
+	rl_tofix  = true;       // the Y increment is pending from here on
+}
+
+void ppu_2c02::sync_from_cpu()
+{
+	if (!rl_on || !cpu_ptr) return;
+	long long t = (long long)(cpu_ptr->cycle + cpu_ptr->get_pending_instruction_cycles()) * 3;
+	int lp = (int)(t - rl_origin);
+	line_sync(lp < 0 ? 0 : lp);
+}
+
+void ppu_2c02::line_sync(int lastpixel)
+{
+	if (!rl_on) return;
+	int lasttile = lastpixel >> 3;
+	if (lasttile > 34) lasttile = 34;
+	if (lasttile - rl_first <= 0) return;
+	for (int c = rl_first; c < lasttile; ++c)
+		bg_render_tile(c);
+	rl_first = lasttile;
+	// A catch-up late in the line (spec O-21) performs the pending Y increment now, with the
+	// register state of this moment, so the end-of-line step finds nothing left to do.
+	if (rl_tofix && lastpixel >= 268) {
+		y_increment();
+		rl_tofix = false;
+	}
+	check_sprite_hit(lastpixel);
+}
+
+// One 8-pixel background tile (index c counts from the line origin), drawn with the live register state.
+// Rendering a tile advances V's coarse X, which is why V changes while a line is drawn.
+void ppu_2c02::bg_render_tile(int c)
+{
+	unsigned char backdrop = (unsigned char)(ppu_mem_read(0x3F00) & 0x3F);
+	const int fx = fine_x;
+	if (reg_mask & 0x08) {
+		unsigned short a = v;
+		int cx = a & 31, cy = (a >> 5) & 31, nt = (a >> 10) & 3, fy = (a >> 12) & 7;
+		unsigned short ntaddr = (unsigned short)(0x2000 | (nt << 10) | (cy << 5) | cx);
+		unsigned char name = mem[mirror_nt_addr(ntaddr)];
+		unsigned short ataddr = (unsigned short)(0x23C0 | (nt << 10) | ((cy >> 2) << 3) | (cx >> 2));
+		unsigned char att = mem[mirror_nt_addr(ataddr)];
+		int sh = ((cy & 2) << 1) | (cx & 2);
+		unsigned char hi = (unsigned char)((att >> sh) & 3);
+		unsigned short base = (reg_ctrl & 0x10) ? 0x1000 : 0x0000;
+		unsigned char p0 = mem[base + name * 16 + fy];
+		unsigned char p1 = mem[base + name * 16 + fy + 8];
+		for (int i = 0; i < 8; ++i) {
+			int x = c * 8 + i - fx;
+			if (x < 0 || x >= SCREEN_WIDTH) continue;
+			unsigned char c2 = (unsigned char)(((p0 >> (7 - i)) & 1) | (((p1 >> (7 - i)) & 1) << 1));
+			if (c2) { ln_col[x] = (unsigned char)(ppu_mem_read((unsigned short)(0x3F00 + ((hi << 2) | c2))) & 0x3F); ln_op[x] = 1; }
+			else    { ln_col[x] = backdrop; ln_op[x] = 0; }
+		}
+		if ((a & 0x1F) == 0x1F) a ^= 0x041F; else ++a;
+		v = a;
+	} else {
+		for (int i = 0; i < 8; ++i) {
+			int x = c * 8 + i - fx;
+			if (x < 0 || x >= SCREEN_WIDTH) continue;
+			ln_col[x] = backdrop;
+			ln_op[x] = 0;
+		}
+	}
+}
+
+// Sprite-0 hit becomes visible once the pixel has been "output": the hit pixel must lie more than
+// 16 dots before the current position (dots are counted from the line origin).
+void ppu_2c02::check_sprite_hit(int lastpixel)
+{
+	if (sphitx == 0x100) return;
+	int l = lastpixel - 16;
+	for (int x = sphitx; x < sphitx + 8 && x < l; ++x) {
+		if ((sphitdata & (0x80 >> (x - sphitx))) && ln_op[x] && x < 255) {
+			reg_status |= 0x40;
+			sphitx = 0x100;
+			break;
+		}
+	}
+}
+
+// Dot 256 of visible line sl.
+void ppu_2c02::line_end256(int sl)
+{
+	line_sync(272);
+	if (rl_tofix) {
+		y_increment();
+		rl_tofix = false;
+	}
+	check_sprite_hit(272);
+	rl_on = false;
+
+	// Composite this row: background, then the sprites prepared during the previous line.
+	const unsigned emph = (reg_mask >> 5) & 7;
+	const bool spr_on = (reg_mask & 0x10) != 0;
+	for (int x = 0; x < SCREEN_WIDTH; ++x) {
+		unsigned char col = ln_col[x];
+		if (spr_on && (spr_flag[x] & 1) && !((spr_flag[x] & 2) && ln_op[x]))
+			col = spr_col[x];
+		if (reg_mask & 0x01) col &= 0x30;
+		unsigned i = (unsigned)(sl * SCREEN_WIDTH + x);
+		fb_idx[i] = fb_index_byte(col, emph);
+		if (framebuf) {
+			framebuf[i * 4 + 0] = nes_color_emph[emph][col * 3 + 2];
+			framebuf[i * 4 + 1] = nes_color_emph[emph][col * 3 + 1];
+			framebuf[i * 4 + 2] = nes_color_emph[emph][col * 3 + 0];
+			framebuf[i * 4 + 3] = 0;
+		}
+	}
+	prepare_sprites(sl);
+}
+
+// Sprite evaluation at dot 256 of line sl for line sl+1: the first 8 sprites with 0 <= sl - Y < 8,
+// a 9th sets the overflow flag.  Pattern data is read now; colours are resolved at the end of the line.
+void ppu_2c02::prepare_sprites(int sl)
+{
+	memset(nxt_flag, 0, sizeof(nxt_flag));
+	nxt_sphitx = 0x100;
+	nxt_sphitdata = 0;
+	if ((reg_mask & 0x18) == 0) return;
+
+	int kept[8];
+	int ns = 0;
+	for (int n = 0; n < 64; ++n) {
+		if ((unsigned)(sl - (int)oam[n * 4]) >= 8u) continue;
+		if (ns < 8) kept[ns++] = n;
+		else { reg_status |= 0x20; break; }
+	}
+
+	const unsigned short base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
+	for (int k = ns - 1; k >= 0; --k) {            // lowest sprite number is drawn last, so it wins
+		int n = kept[k];
+		const unsigned char* sp = oam + n * 4;
+		int row = sl - (int)sp[0];
+		unsigned char attr = sp[2];
+		if (attr & 0x80) row = 7 - row;
+		unsigned char p0 = mem[base + sp[1] * 16 + row];
+		unsigned char p1 = mem[base + sp[1] * 16 + row + 8];
+		unsigned char mask = 0;
+		for (int i = 0; i < 8; ++i) {
+			int b = (attr & 0x40) ? i : 7 - i;
+			unsigned char c2 = (unsigned char)(((p0 >> b) & 1) | (((p1 >> b) & 1) << 1));
+			if (!c2) continue;
+			mask |= (unsigned char)(0x80 >> i);
+			int x = sp[3] + i;
+			if (x >= SCREEN_WIDTH) continue;
+			nxt_flag[x] = (unsigned char)(1 | ((attr & 0x20) ? 2 : 0));
+			nxt_c2[x]   = c2;
+			nxt_pal[x]  = (unsigned char)(0x10 | ((attr & 3) << 2));
+		}
+		if (n == 0) { nxt_sphitx = sp[3]; nxt_sphitdata = mask; }
+	}
+}
+
+void ppu_2c02::resolve_sprites()
+{
+	for (int x = 0; x < SCREEN_WIDTH; ++x) {
+		spr_flag[x] = nxt_flag[x];
+		if (nxt_flag[x])
+			spr_col[x] = (unsigned char)(ppu_mem_read((unsigned short)(0x3F00 + nxt_pal[x] + nxt_c2[x])) & 0x3F);
+	}
+	sphitx = nxt_sphitx;
+	sphitdata = nxt_sphitdata;
 }
 
 void ppu_2c02::oam_dma(unsigned char* page_data)

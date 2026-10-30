@@ -397,6 +397,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	run_ppu(256);
 	run_ppu(69);
 	ppu.copy_t_to_v();   // spec O-12: V <- T at pre-render dot 325
+	ppu.line_start_frame((long long)cpu.cycle * 3 + g_ppu_budget, -g_ppu_budget);   // line 0 begins
 	run_ppu(16 - kook);
 	kook ^= 1;
 
@@ -408,25 +409,22 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	// 240 visible scanlines × 341 PPU each (= FCEUX's DoLine()).
 	for (int sl = 0; sl < 240; ++sl)
 	{
-		ppu.begin_scanline(sl);
-		ppu.check_sprite0_hit(sl);
 		if (g_dumper) g_dumper->scanline = sl;
-		// 341 dots in the same four chunks as FCEUX's line (256 + 6 + 63 + 16); the PPU
-		// address and sprite-overflow updates happen at the chunk boundaries.
+		// 341 dots in the same four chunks as FCEUX's line (256 + 6 + 63 + 16).  The line was
+		// started at the end of the previous line's third chunk; its tiles are drawn lazily as the
+		// CPU touches PPU registers (spec O-19) and the row is finished at dot 256.
 		run_ppu(256);
 		g_line_ov[0] = -ppu_budget;
-		ppu.dot256_updates(sl);
+		ppu.line_end256(sl);
 		run_ppu(6);
 		g_line_ov[1] = -ppu_budget;
 		ppu.copy_horizontal_bits();
 		run_ppu(63);
 		g_line_ov[2] = -ppu_budget;
+		if (sl + 1 < 240)
+			ppu.line_next(sl + 1, (long long)cpu.cycle * 3 + ppu_budget, -ppu_budget);
 		run_ppu(16);
 		g_line_ov[3] = -ppu_budget;
-		ppu.end_scanline(sl);
-		// Render this scanline live, reading from current mem[] so VRAM writes
-		// made by the CPU during this scanline's run_ppu() are immediately visible.
-		ppu.render_scanline(sl, ppu.framebuf);
 		if (g_dumper) g_dumper->on_scanline_end(sl);
 	}
 }
