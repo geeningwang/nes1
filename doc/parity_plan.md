@@ -252,7 +252,10 @@ Follow-up (the items that were "not checked against FCEUX"): all done, spec O-30
 Result after the follow-up: all 19 suite entries (nestest twice, Mappy, color_test and 15 probes) IDENTICAL for 3000 frames at
 scanline level, plus both opcode sweeps (120 variants, 242 opcodes, RAM and I/O modes).
 
+Instruction-level text traces: `tool/compare_traces.py` / `run_parity.ps1 -TraceFrames`. For all 20 suite ROMs (nestest twice, Mappy,
+color_test, 16 probes) frames 1-8, 60, 120, 300, 600, 1000, 1500, 2000, 2500 and 3000 (17 frames each) are identical line by line,
+about 3.3 million instructions in all.
+
 ### Still open
 
-- The instruction-level text trace comparison on chosen frames (the per-instruction chained hash is already compared everywhere).
-- The `268` threshold of O-21 is now pinned exactly (`ppu_fixit_threshold` probe, checked by mutating the threshold to 267 and 269). Other mappers are out of scope (mapper 0 only).
+Nothing. Only mapper 0 is supported by nes1, so other mappers are out of scope.

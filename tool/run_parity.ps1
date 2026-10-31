@@ -6,6 +6,7 @@
   powershell -File tool\run_parity.ps1                       # 3000 frames, frame-level digests
   powershell -File tool\run_parity.ps1 -Level scanline       # also every scanline of every frame
   powershell -File tool\run_parity.ps1 -Frames 300 -Only mappy
+  powershell -File tool\run_parity.ps1 -TraceFrames 1-8,100,3000       # full instruction traces of chosen frames
   powershell -File tool\run_parity.ps1 -Frames 10 -RomDir C:\work\sweep   # see tool\make_opcode_sweep.py
 
   Each ROM is run through tool\find_divergence.py, which drills down from the first differing frame
@@ -21,6 +22,7 @@ param(
     [string]$Nes1,
     [string]$Fceux,
     [string]$Python,
+    [string]$TraceFrames = '',   # compare full instruction traces of these frames (e.g. '1-8,100,3000') instead of the digest search
     [string]$RomDir = ''     # run every ROM of this directory instead of the standard suite (e.g. the opcode sweep)
 )
 
@@ -60,8 +62,13 @@ foreach ($t in $suite) {
     $rom = if ($RomDir) { $t[1] } else { Join-Path $repo $t[1] }
     $out = Join-Path $Work $t[0]
     Write-Host "=== $($t[0]) ($Frames frames, $Level level)"
+    if ($TraceFrames -ne '') {
+        $a = @((Join-Path $PSScriptRoot 'compare_traces.py'), '--nes1', $Nes1, '--fceux', $Fceux, '--rom', $rom,
+               '--frames', $Frames, '--work', $out, '--trace-frames', $TraceFrames, '--timeout', $TimeoutSec) + $t[2]
+    } else {
     $a = @((Join-Path $PSScriptRoot 'find_divergence.py'), '--nes1', $Nes1, '--fceux', $Fceux, '--rom', $rom,
            '--frames', $Frames, '--work', $out, '--level', $Level, '--timeout', $TimeoutSec) + $t[2]
+    }
     $log = & $Python @a 2>&1
     $code = $LASTEXITCODE
     $log | ForEach-Object { Write-Host "    $_" }

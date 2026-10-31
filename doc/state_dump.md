@@ -154,3 +154,9 @@ To change what is dumped, edit `nesdump::State` and `Recorder::write_event` in `
 
 The first comparison (Mappy, 120 frames) and the baseline of the parity suite are recorded in
 [parity_baseline.md](parity_baseline.md); progress against the plan is tracked in [parity_plan.md](parity_plan.md).
+
+## Instruction-trace comparison
+
+`tool/compare_traces.py` runs both emulators with `--trace-frames` for chosen frames and compares **every line** of every trace
+(`PC OP A X Y S P CYCLES SCANLINE DB PL`), reporting the first differing instruction with its neighbours and the differing columns.
+`run_parity.ps1 -TraceFrames 1-8,100,3000` does this for the whole suite (default list: `1-8,60,120,300,600,1000,1500,2000,2500,3000`).
