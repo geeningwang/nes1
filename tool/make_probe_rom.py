@@ -717,6 +717,33 @@ _prog, _chr = _sprite_stress()
 PROBES["ppu_sprite_stress"] = ("moving sprites, 8x8/8x16, left-column masks", _prog, _chr)
 
 
+# Turns rendering off at pseudo-random positions in the visible lines.  Whether the pending Y increment of
+# V (spec O-21) has already happened at that moment depends on the exact catch-up threshold, so V at the end
+# of such a line pins the threshold down to one dot.
+PROBES["ppu_fixit_threshold"] = ("rendering off at varying positions: Y-increment threshold", PREAMBLE + """
+    LDA #0
+    STA $00
+loop:
+    LDA #$1E
+    STA $2001
+    LDX $00
+    INX
+    CPX #37
+    BNE ok
+    LDX #1
+ok:
+    STX $00
+d1:
+    DEX
+    BNE d1
+    LDA #0
+    STA $2001
+    NOP
+    NOP
+    JMP loop
+""" + STUBS + vectors())
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "test", "probe")

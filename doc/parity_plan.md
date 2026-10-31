@@ -255,4 +255,4 @@ scanline level, plus both opcode sweeps (120 variants, 242 opcodes, RAM and I/O 
 ### Still open
 
 - The instruction-level text trace comparison on chosen frames (the per-instruction chained hash is already compared everywhere).
-- Unverified in nes1: the exact `268` threshold of O-21; 8x16 sprites with MMC-style CHR banking and other mappers are out of scope (mapper 0 only).
+- The `268` threshold of O-21 is now pinned exactly (`ppu_fixit_threshold` probe, checked by mutating the threshold to 267 and 269). Other mappers are out of scope (mapper 0 only).
