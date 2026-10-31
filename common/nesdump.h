@@ -187,6 +187,39 @@ struct Config {
 	RangeList   trace_frames;       // frames for which a text instruction trace is written
 	RangeList   dump_insns;         // global instruction numbers (1-based) that get a full dump
 	int         init_pc = -1;       // start execution at this address instead of the reset vector
+	std::string input_file;         // --input FILE: controller state per frame (see input_at)
+	std::vector<uint16_t> input;    // per emulated frame (index 0 = frame 1): low byte pad 1, high byte pad 2
+
+	// Controller bits for the 1-based emulated frame (A=1 B=2 Select=4 Start=8 Up=0x10 Down=0x20 Left=0x40 Right=0x80,
+	// pad 1 in the low byte, pad 2 in the next one).  Past the end of the file nothing is pressed.
+	uint16_t input_at(int frame) const
+	{
+		return (frame >= 1 && (size_t)frame <= input.size()) ? input[(size_t)frame - 1] : 0;
+	}
+
+	// File format: one line per frame, "P1 P2" as hex bytes (the second one optional); '#' starts a comment line.
+	bool load_input(std::string& err)
+	{
+		FILE* f = nullptr;
+#ifdef _WIN32
+		if (fopen_s(&f, input_file.c_str(), "r") != 0) f = nullptr;
+#else
+		f = fopen(input_file.c_str(), "r");
+#endif
+		if (!f) { err = "cannot open input file " + input_file; return false; }
+		char line[256];
+		while (fgets(line, sizeof(line), f)) {
+			const char* p = line;
+			while (*p == ' ' || *p == '\t') ++p;
+			if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) continue;
+			char* ep = nullptr;
+			unsigned long a = strtoul(p, &ep, 16), b = 0;
+			if (ep != p) { p = ep; b = strtoul(p, &ep, 16); }
+			input.push_back((uint16_t)((a & 0xFF) | ((b & 0xFF) << 8)));
+		}
+		fclose(f);
+		return true;
+	}
 	std::string cmdline;            // echoed to run.txt
 
 	// Returns true if argv requests a dump run (contains --dump).
@@ -212,6 +245,7 @@ struct Config {
 			"  --trace-frames LIST         write trace_fNNNNNN.txt (every instruction) for these frames\n"
 			"  --dump-insn LIST            full dump before these global instruction numbers (1-based)\n"
 			"  --init-pc ADDR              hex; start at ADDR instead of the reset vector (e.g. C000 for nestest)\n"
+			"  --input FILE                controller state per frame: lines 'P1 P2' (hex bytes, A=01 B=02 Sel=04 Start=08 U=10 D=20 L=40 R=80)\n"
 			"LIST = N | A-B | A-B/STEP | all, comma separated (inclusive, 1-based frames).\n";
 	}
 
@@ -244,6 +278,7 @@ struct Config {
 			else if (a == "--digest")               { digest = true; }
 			else if (a == "--trace-frames")         { if (!need(v) || !trace_frames.parse(v, err)) return false; }
 			else if (a == "--dump-insn")            { if (!need(v) || !dump_insns.parse(v, err)) return false; }
+			else if (a == "--input")                { if (!need(v)) return false; input_file = v; if (!load_input(err)) return false; }
 			else if (a == "--init-pc") {
 				if (!need(v)) return false;
 				char* ep = nullptr;

@@ -136,8 +136,9 @@ cpu_6502::cpu_6502()
 	ppu = nullptr;
 	apu = nullptr;
 	joypad1_state = 0;
-	joypad1_strobe = false;
-	joypad1_shift = 0;
+	joypad2_state = 0;
+	joy_readbit[0] = joy_readbit[1] = 0;
+	last_strobe = 0;
 	data_bus = 0;
 	pending_instruction_cycles = 0;
 	rpi = 0;
@@ -202,20 +203,14 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 		v = ppu ? ppu->cpu_read(addr) : 0;
 	else if (addr == 0x4015)                 // APU status
 		v = apu ? apu->read_status() : 0;
-	else if (addr == 0x4016)                 // joypad 1: bits 5-7 are open bus (spec O-8)
+	else if (addr == 0x4016 || addr == 0x4017)   // joypads: bit 0 from the pad, bits 6-7 open bus (spec O-8, O-39)
 	{
-		unsigned char bit;
-		if (joypad1_strobe)
-			bit = joypad1_state & 1;         // A button continuously during strobe
-		else
-		{
-			bit = joypad1_shift & 1;
-			joypad1_shift >>= 1;
-		}
-		v = (unsigned char)((data_bus & 0xE0) | bit);
+		const int w = addr & 1;
+		const unsigned char pad = w ? joypad2_state : joypad1_state;
+		unsigned char bit = (joy_readbit[w] >= 8) ? 1 : (unsigned char)((pad >> joy_readbit[w]) & 1);
+		++joy_readbit[w];
+		v = (unsigned char)((data_bus & 0xC0) | bit);
 	}
-	else if (addr == 0x4017)                 // joypad 2 (not connected)
-		v = (unsigned char)(data_bus & 0xE0);
 	else if (addr >= 0x6000)                 // $6000-$7FFF work RAM, $8000-$FFFF PRG ROM
 		v = mem[addr];
 	else                                     // $4000-$4014, $4018-$5FFF: nothing drives the bus
@@ -265,13 +260,12 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 		if (apu) apu->write(addr, val);
 		return;
 	}
-	// Joypad strobe
+	// Joypad strobe: the report restarts on the 1 -> 0 edge of bit 0 (spec O-39)
 	if (addr == 0x4016)
 	{
-		bool new_strobe = (val & 1) != 0;
-		if (joypad1_strobe && !new_strobe)
-			joypad1_shift = joypad1_state;  // latch buttons on strobe 1→0
-		joypad1_strobe = new_strobe;
+		if ((last_strobe & 1) && !(val & 1))
+			joy_readbit[0] = joy_readbit[1] = 0;
+		last_strobe = val;
 		return;
 	}
 	// $6000-$7FFF work RAM; writes to PRG ROM ($8000-$FFFF) and unmapped space are ignored
