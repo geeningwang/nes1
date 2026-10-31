@@ -157,6 +157,7 @@ unsigned char nes_color_emph[8][64 * 3] = {
 ppu_2c02::ppu_2c02()
 {
 	memset(fb_idx, 0, sizeof(fb_idx));
+	vis_scanline = false;
 	rl_on = false;  rl_sl = 0;  rl_first = 0;  rl_px = 0;  rl_tofix = false;  rl_origin = 0;
 	memset(pend_col, 0, sizeof(pend_col));  memset(pend_op, 0, sizeof(pend_op));  memset(pend_valid, 0, sizeof(pend_valid));
 	memset(ln_col, 0, sizeof(ln_col));    memset(ln_op, 0, sizeof(ln_op));
@@ -278,7 +279,7 @@ void ppu_2c02::ppu_mem_write(unsigned short addr, unsigned char val)
 		mem[addr] = val;
 		return;
 	}
-	mem[addr] = val;
+	// $0000-$1FFF is CHR ROM (the loader requires one CHR bank): writes are ignored (spec O-32)
 }
 
 void ppu_2c02::load_chr_rom(unsigned char* prom, int rom_size)
@@ -754,7 +755,21 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 		// Palette reads are not buffered
 		if ((v & 0x3FFF) >= 0x3F00)
 			result = data_buf;
-		v += (reg_ctrl & 0x04) ? 32 : 1;
+		if ((reg_mask & 0x18) && vis_scanline)
+		{
+			// A read during rendering steps V like a Y increment instead of by 1 or 32 (spec O-34).
+			unsigned short rad = v;
+			if ((rad & 0x7000) == 0x7000) {
+				rad ^= 0x7000;
+				if ((rad & 0x3E0) == 0x3A0)      rad ^= 0xBA0;
+				else if ((rad & 0x3E0) == 0x3E0) rad ^= 0x3E0;
+				else                             rad += 0x20;
+			} else
+				rad += 0x1000;
+			v = rad;
+		}
+		else
+			v += (reg_ctrl & 0x04) ? 32 : 1;
 		io_latch = result;
 		return result;
 	}
@@ -775,6 +790,9 @@ void ppu_2c02::cpu_write(unsigned short addr, unsigned char val)
 	switch (addr)
 	{
 	case 0x2000:  // PPUCTRL
+		// Turning NMI on while the vblank flag is set raises an NMI right away (spec O-38).
+		if (!(reg_ctrl & 0x80) && (val & 0x80) && (reg_status & 0x80) && cpu_ptr)
+			cpu_ptr->arm_delayed_nmi();
 		reg_ctrl = val;
 		t = (t & 0xF3FF) | ((val & 0x03) << 10);
 		scroll_nt = val & 0x03;  // save NT bits for render
@@ -980,8 +998,7 @@ void ppu_2c02::line_start_frame(long long origin_dots, int overshoot)
 {
 	memset(spr_flag, 0, sizeof(spr_flag));
 	memset(nxt_flag, 0, sizeof(nxt_flag));
-	sphitx = 0x100;
-	nxt_sphitx = 0x100;
+	// sphitx/sphitdata are left alone: sprite 0 of line 239 can still hit on line 0 (spec O-37).
 	line_begin(0, origin_dots, overshoot);
 }
 
@@ -1023,19 +1040,36 @@ void ppu_2c02::line_sync(int lastpixel)
 	{ static int df = -2, dl = -2; if (df == -2) { char eb[64] = ""; size_t en = 0; getenv_s(&en, eb, sizeof(eb), "NESDBG"); const char* e = en ? eb : nullptr; df = e ? atoi(e) : -1; dl = (e && strchr(e, ':')) ? atoi(strchr(e, ':') + 1) : -1; }
 	  if (df == g_dbg_frame && dl == rl_sl) fprintf(stderr, "NES1 sync f=%d sl=%d lastpixel=%d first=%d mask=%02X ctrl=%02X fx=%d\n", g_dbg_frame, rl_sl, lastpixel, rl_first, reg_mask, reg_ctrl, fine_x); }
 	int lasttile = lastpixel >> 3;
+	// One more tile is fetched when sprite 0's hit pixel is about to be output (FCEUX quirk, spec O-37).
+	if (sphitx != 0x100 && !(reg_status & 0x40) && sphitx < lastpixel - 16 && !(sphitx < (lasttile - 2) * 8))
+		++lasttile;
 	if (lasttile > 34) lasttile = 34;
 	if (lasttile - rl_first <= 0) return;
 	// Background enabled: tile i is fetched in iteration i (advancing V, colours resolved now) and the
 	// pixels of the tile fetched two iterations earlier are written at the write pointer.
 	// Background disabled: one backdrop tile per iteration is written at the write pointer, so the
 	// pointer lags the fetch count by two tiles only if enabled tiles were written before.
+	const int first_before = rl_first;
 	for (int i = rl_first; i < lasttile; ++i) {
-		if (reg_mask & 0x08) {
+		if (reg_mask & 0x18) {
+			// Sprites alone also keep the tile pipeline (and V) running; their background pixels are
+			// replaced by the backdrop below (spec O-35).
 			bg_fetch_tile(i);
 			if (i >= 2) { bg_output_tile(i - 2, rl_px); ++rl_px; }
 		} else {
 			bg_fill_tile(rl_px);
 			++rl_px;
+		}
+	}
+	if (reg_mask & 0x18) {
+		const unsigned char backdrop = (unsigned char)(ppu_mem_read(0x3F00) & 0x3F);
+		// Left 8 pixels masked in the background: the catch-up that reaches the first visible tile paints them.
+		if (first_before <= 2 && 2 < lasttile && !(reg_mask & 0x02))
+			for (int x = 0; x < 8; ++x) { ln_col[x] = backdrop; ln_op[x] = 0; }
+		if (!(reg_mask & 0x08)) {
+			int tstart = first_before - 2, tcount = lasttile - first_before;
+			if (tstart < 0) { tcount += tstart; tstart = 0; }
+			for (int x = tstart * 8; x < (tstart + tcount) * 8 && x < SCREEN_WIDTH; ++x) { ln_col[x] = backdrop; ln_op[x] = 0; }
 		}
 	}
 	rl_first = lasttile;
@@ -1113,6 +1147,7 @@ void ppu_2c02::check_sprite_hit(int lastpixel)
 	for (int x = sphitx; x < sphitx + 8 && x < l; ++x) {
 		if ((sphitdata & (0x80 >> (x - sphitx))) && ln_op[x] && x < 255) {
 			reg_status |= 0x40;
+			{ size_t en = 0; char eb[8]; getenv_s(&en, eb, sizeof(eb), "NESDBGHIT"); if (en) fprintf(stderr, "NES1 hit f=%d sl=%d p=%d x=%d sphitx=%d data=%02X\n", g_dbg_frame, rl_sl, lastpixel, x, sphitx, sphitdata); }
 			sphitx = 0x100;
 			break;
 		}
@@ -1143,7 +1178,7 @@ void ppu_2c02::line_end256(int sl)
 	const bool spr_on = (reg_mask & 0x10) != 0;
 	for (int x = 0; x < SCREEN_WIDTH; ++x) {
 		unsigned char col = ln_col[x];
-		if (spr_on && (spr_flag[x] & 1) && !((spr_flag[x] & 2) && ln_op[x]))
+		if (spr_on && (spr_flag[x] & 1) && !((spr_flag[x] & 2) && ln_op[x]) && (x >= 8 || (reg_mask & 0x04)))
 			col = spr_col[x];
 		if (reg_mask & 0x01) col &= 0x30;
 		unsigned i = (unsigned)(sl * SCREEN_WIDTH + x);
@@ -1167,23 +1202,29 @@ void ppu_2c02::prepare_sprites(int sl)
 	nxt_sphitdata = 0;
 	if ((reg_mask & 0x18) == 0) return;
 
+	const bool tall = (reg_ctrl & 0x20) != 0;     // 8x16 sprites
+	const unsigned height = tall ? 16u : 8u;
 	int kept[8];
 	int ns = 0;
 	for (int n = 0; n < 64; ++n) {
-		if ((unsigned)(sl - (int)oam[n * 4]) >= 8u) continue;
+		if ((unsigned)(sl - (int)oam[n * 4]) >= height) continue;
 		if (ns < 8) kept[ns++] = n;
 		else { reg_status |= 0x20; break; }
 	}
 
-	const unsigned short base = (reg_ctrl & 0x08) ? 0x1000 : 0x0000;
 	for (int k = ns - 1; k >= 0; --k) {            // lowest sprite number is drawn last, so it wins
 		int n = kept[k];
 		const unsigned char* sp = oam + n * 4;
 		int row = sl - (int)sp[0];
 		unsigned char attr = sp[2];
-		if (attr & 0x80) row = 7 - row;
-		unsigned char p0 = mem[base + sp[1] * 16 + row];
-		unsigned char p1 = mem[base + sp[1] * 16 + row + 8];
+		// Pattern address: 8x16 sprites take the table from bit 0 of the tile number and fetch the
+		// bottom tile for rows 8-15 (spec O-36); flipping vertically mirrors all 16 rows.
+		unsigned vadr = tall ? (unsigned)(((sp[1] & 1) << 12) + ((sp[1] & 0xFE) << 4))
+		                     : (unsigned)((sp[1] << 4) + ((reg_ctrl & 0x08) ? 0x1000 : 0));
+		if (attr & 0x80) vadr = vadr + 7 - row + (tall ? 16 : 0) - (row & 8);
+		else             vadr = vadr + row + (row & 8);
+		unsigned char p0 = mem[vadr];
+		unsigned char p1 = mem[vadr + 8];
 		unsigned char mask = 0;
 		for (int i = 0; i < 8; ++i) {
 			int b = (attr & 0x40) ? i : 7 - i;
@@ -1196,19 +1237,26 @@ void ppu_2c02::prepare_sprites(int sl)
 			nxt_c2[x]   = c2;
 			nxt_pal[x]  = (unsigned char)(0x10 | ((attr & 3) << 2));
 		}
-		if (n == 0) { nxt_sphitx = sp[3]; nxt_sphitdata = mask; }
+		if (n == 0 && mask) { nxt_sphitx = sp[3]; nxt_sphitdata = mask; }
 	}
 }
 
 void ppu_2c02::resolve_sprites()
 {
+	// Sprites only reach the next line while they are enabled at this moment (spec O-37).
+	const bool on = (reg_mask & 0x10) != 0;
 	for (int x = 0; x < SCREEN_WIDTH; ++x) {
-		spr_flag[x] = nxt_flag[x];
-		if (nxt_flag[x])
+		spr_flag[x] = on ? nxt_flag[x] : 0;
+		if (spr_flag[x])
 			spr_col[x] = (unsigned char)(ppu_mem_read((unsigned short)(0x3F00 + nxt_pal[x] + nxt_c2[x])) & 0x3F);
 	}
-	sphitx = nxt_sphitx;
+	sphitx = (on && !(reg_status & 0x40)) ? nxt_sphitx : 0x100;   // no new hit is armed once the flag is set
 	sphitdata = nxt_sphitdata;
+}
+
+void ppu_2c02::carry_sprite0()
+{
+	resolve_sprites();
 }
 
 void ppu_2c02::oam_dma(unsigned char* page_data)

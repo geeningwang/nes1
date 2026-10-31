@@ -18,7 +18,10 @@ public:
 
 	void reset();
 	bool step(bool log);
-	void nmi();
+	bool nmi();                 // enter the NMI handler; false (and nothing happens) while jammed
+	void arm_delayed_nmi();     // $2000 enabled NMI during vblank: taken after the next instruction (spec O-38)
+	bool take_pending_nmi();    // service the armed NMI if it is due
+	unsigned char nmi_state;    // 0 none, 1 armed, 2 due at the next instruction boundary
 	bool irq_pending() const;   // IRQ line asserted, I flag (as of the previous instruction) clear, CPU not jammed
 	void irq();
 

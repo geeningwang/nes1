@@ -1088,6 +1088,7 @@ static void CheckSpriteHit(int p) {
 	for (x = sphitx; x < (sphitx + 8) && x < l; x++) {
 		if ((sphitdata & (0x80 >> (x - sphitx))) && !(Plinef[x] & 64) && x < 255) {
 			PPU_status |= 0x40;
+			if (g_nesdump_active && getenv("NESDBGHIT")) fprintf(stderr, "FCEUX hit f=%d sl=%d p=%d x=%d sphitx=%d data=%02X Plinef=%02X\n", NesDump_Frame(), scanline, p, x, sphitx, sphitdata, Plinef[x]);
 			sphitx = 0x100;
 			break;
 		}

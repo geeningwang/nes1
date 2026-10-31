@@ -335,7 +335,15 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		ppu_budget += ppu_cycles;
 		while (ppu_budget > 0) {
 			// IRQ entry is checked before every instruction; it costs 7 cycles of the budget (spec O-25).
-			if (cpu.irq_pending()) {
+			if (cpu.nmi_state) {
+				// An NMI armed by a $2000 write is converted at the next boundary and taken at the one after.
+				if (cpu.nmi_state == 1) cpu.nmi_state = 2;
+				else if (cpu.take_pending_nmi()) {
+					if (audio_samples) apu.tick_n(7, *audio_samples);
+					ppu_budget -= 3 * 7;
+					if (ppu_budget <= 0) break;
+				}
+			} else if (cpu.irq_pending()) {
 				cpu.irq();
 				if (audio_samples) apu.tick_n(7, *audio_samples);
 				ppu_budget -= 3 * 7;
@@ -370,8 +378,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	run_ppu(12);
 
 	// ── Step 4: fire NMI if PPUCTRL bit 7 is set ─────────────────────────
-	if (ppu.nmi_enabled()) {
-		cpu.nmi();
+	if (ppu.nmi_enabled() && cpu.nmi()) {
 		// Deduct the NMI's 7-cycle overhead from the cycle budget so that the
 		// rest-of-vblank run_ppu(6808) has the correct effective CPU budget.
 		// On real NES / FCEUX, the NMI fires WITHIN X6502_Run and its 7 cycles
@@ -414,6 +421,7 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	ppu.begin_frame();
 
 	// 240 visible scanlines × 341 PPU each (= FCEUX's DoLine()).
+	ppu.vis_scanline = true;
 	for (int sl = 0; sl < 240; ++sl)
 	{
 		if (g_dumper) g_dumper->scanline = sl;
@@ -430,6 +438,9 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 		g_line_ov[2] = -ppu_budget;
 		if (sl + 1 < 240)
 			ppu.line_next(sl + 1, (long long)cpu.cycle * 3 + ppu_budget, -ppu_budget);
+		else
+			ppu.carry_sprite0();
+		if (sl == 239) ppu.vis_scanline = false;   // the tail of line 239 already counts as line 240
 		run_ppu(16);
 		g_line_ov[3] = -ppu_budget;
 		if (g_dumper) g_dumper->on_scanline_end(sl);

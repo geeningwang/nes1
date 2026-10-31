@@ -6,6 +6,7 @@
   powershell -File tool\run_parity.ps1                       # 3000 frames, frame-level digests
   powershell -File tool\run_parity.ps1 -Level scanline       # also every scanline of every frame
   powershell -File tool\run_parity.ps1 -Frames 300 -Only mappy
+  powershell -File tool\run_parity.ps1 -Frames 10 -RomDir C:\work\sweep   # see tool\make_opcode_sweep.py
 
   Each ROM is run through tool\find_divergence.py, which drills down from the first differing frame
   to the scanline, the instruction and the differing fields.  Output goes to <Work>\<name>\.
@@ -19,7 +20,8 @@ param(
     [int]$TimeoutSec = 600,
     [string]$Nes1,
     [string]$Fceux,
-    [string]$Python
+    [string]$Python,
+    [string]$RomDir = ''     # run every ROM of this directory instead of the standard suite (e.g. the opcode sweep)
 )
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -47,10 +49,15 @@ if (Test-Path $probeDir) {
     }
 }
 
+if ($RomDir) {
+    $suite = @()
+    Get-ChildItem $RomDir -Filter *.nes | ForEach-Object { $suite += ,@($_.BaseName, $_.FullName, @()) }
+}
+
 $results = @()
 foreach ($t in $suite) {
     if ($Only -and $t[0] -notlike "*$Only*") { continue }
-    $rom = Join-Path $repo $t[1]
+    $rom = if ($RomDir) { $t[1] } else { Join-Path $repo $t[1] }
     $out = Join-Path $Work $t[0]
     Write-Host "=== $($t[0]) ($Frames frames, $Level level)"
     $a = @((Join-Path $PSScriptRoot 'find_divergence.py'), '--nes1', $Nes1, '--fceux', $Fceux, '--rom', $rom,

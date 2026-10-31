@@ -101,6 +101,7 @@ public:
 	// point with the register state from before the access.
 	void line_start_frame(long long origin_dots, int overshoot);   // pre-render line, dot 325: line 0 begins
 	void line_next(int sl, long long origin_dots, int overshoot);   // end of the previous line's third slice
+	void carry_sprite0();                                           // end of line 239: sprite 0 state outlives the frame (spec O-37)
 	void line_end256(int sl);           // dot 256: finish the tiles, Y increment, composite the row, evaluate sprites
 	void sync_from_cpu();               // called before every PPU register access
 
@@ -178,6 +179,9 @@ private:
 	void y_increment();
 
 	bool          rl_on;          // a visible line is being rendered
+public:
+	bool          vis_scanline;   // FCEUX's `scanline < 240`: set by the frame loop (spec O-34)
+private:
 	int           rl_sl;
 	int           rl_first;       // first background tile not yet fetched
 	int           rl_px;          // number of 8-pixel tiles already written to the line (the write pointer)

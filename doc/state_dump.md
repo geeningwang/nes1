@@ -133,7 +133,7 @@ folders and names the first differing event and fields. `tool/find_divergence.py
 
 ### Debugging aid: `NESDBG`
 
-Both emulators print the catch-up positions of the line renderer to stderr when the environment variable `NESDBG=<frame>:<scanline>` is set during a dump run (`NES1 sync ...` / `FCEUX sync ...` lines with the position, the first unrendered tile, PPUMASK, PPUCTRL and fine X). Identical sequences mean the timing agrees and any difference is in what is drawn. This is how the mid-line rendering rules in [parity_spec.md](parity_spec.md) (O-19 to O-23) were found.
+Both emulators print the catch-up positions of the line renderer to stderr when the environment variable `NESDBG=<frame>:<scanline>` is set during a dump run (`NES1 sync ...` / `FCEUX sync ...` lines with the position, the first unrendered tile, PPUMASK, PPUCTRL and fine X). Identical sequences mean the timing agrees and any difference is in what is drawn. This is how the mid-line rendering rules in [parity_spec.md](parity_spec.md) (O-19 to O-23) were found. `NESDBGHIT=1` additionally prints every sprite-0 hit (`NES1 hit ...` / `FCEUX hit ...` with frame, line, position and sprite data).
 
 ## Where the code is
 

@@ -142,6 +142,7 @@ cpu_6502::cpu_6502()
 	pending_instruction_cycles = 0;
 	rpi = 0;
 	jammed = false;
+	nmi_state = 0;
 	apu_cycle = 0;
 }
 
@@ -225,6 +226,7 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 
 void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 {
+	const unsigned char prev_bus = data_bus;
 	data_bus = val;
 	// CPU RAM: $0000-$07FF, mirrored at $0800-$1FFF
 	if (addr < 0x2000)
@@ -243,9 +245,18 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 	// Real hardware charges 513/514 but we match FCEUX for frame-accurate output.
 	if (addr == 0x4014)
 	{
-		if (ppu)
-			ppu->oam_dma(mem + ((val & 0x07) << 8));  // DMA from mirrored RAM
-		cycle += 512;
+		// The 256 bytes are read through the CPU bus (any page, side effects included) and written
+		// to $2004 one by one (spec O-33).
+		data_bus = prev_bus;   // the bus still holds the previous value while the write handler runs
+		for (unsigned int i = 0; i < 256; ++i)
+		{
+			++cycle;   // one cycle per access, so reads of PPU registers see the advancing time
+			const unsigned char b = mem_read((unsigned short)((val << 8) | i));
+			++cycle;
+			if (ppu) ppu->cpu_write(0x2004, b);
+			data_bus = b;
+		}
+		data_bus = val;
 		return;
 	}
 	// APU registers
@@ -409,7 +420,7 @@ opcode opcode_items[] =
 	{ LDY, 2, ADDR_IMMEDIATE, 2, 0 },{ LDA, 2, ADDR_INDIRECT_X, 6, 0 },{ LDX, 2, ADDR_IMMEDIATE, 2, 0 },{ SLAX, 2, ADDR_INDIRECT_X, 6, 0 },{ LDY, 2, ADDR_ZERO_PAGE, 3, 0 },{ LDA, 2, ADDR_ZERO_PAGE, 3, 0 },{ LDX, 2, ADDR_ZERO_PAGE, 3, 0 },{ SLAX, 2, ADDR_ZERO_PAGE, 3, 0 },
 	{ TAY, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 2, ADDR_IMMEDIATE, 2, 0 },{ TAX, 1, ADDR_IMPLICIT, 2, 0 },{ SATX, 2, ADDR_IMMEDIATE, 2, 0 },{ LDY, 3, ADDR_ABSOLUTE, 4, 0 },{ LDA, 3, ADDR_ABSOLUTE, 4, 0 },{ LDX, 3, ADDR_ABSOLUTE, 4, 0 },{ SLAX, 3, ADDR_ABSOLUTE, 4, 0 },
 	{ BCS, 2, ADDR_RELATIVE, 2, 2 },{ LDA, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SLAX, 2, ADDR_INDIRECT_Y, 5, 1 },{ LDY, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDA, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ LDX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },{ SLAX, 2, ADDR_ZERO_PAGE_Y, 4, 0 },
-	{ CLV, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ TSX, 1, ADDR_IMPLICIT, 2, 0 },{ SLAS, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ LDY, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDX, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SLAX, 3, ADDR_ABSOLUTE_Y, 4, 1 },
+	{ CLV, 1, ADDR_IMPLICIT, 2, 0 },{ LDA, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ TSX, 1, ADDR_IMPLICIT, 2, 0 },{ SLAS, 3, ADDR_ABSOLUTE_Y, 4, 0 },{ LDY, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDA, 3, ADDR_ABSOLUTE_X, 4, 1 },{ LDX, 3, ADDR_ABSOLUTE_Y, 4, 1 },{ SLAX, 3, ADDR_ABSOLUTE_Y, 4, 1 },
 	{ CPY, 2, ADDR_IMMEDIATE, 2, 0 },{ CMP, 2, ADDR_INDIRECT_X, 6, 0 },{ SNOP, 2, ADDR_IMMEDIATE, 2, 0 },{ SDCP, 2, ADDR_INDIRECT_X, 8, 0 },{ CPY, 2, ADDR_ZERO_PAGE, 3, 0 },{ CMP, 2, ADDR_ZERO_PAGE, 3, 0 },{ DEC, 2, ADDR_ZERO_PAGE, 5, 0 },{ SDCP, 2, ADDR_ZERO_PAGE, 5, 0 },
 	{ INY, 1, ADDR_IMPLICIT, 2, 0 },{ CMP, 2, ADDR_IMMEDIATE, 2, 0 },{ DEX, 1, ADDR_IMPLICIT, 2, 0 },{ SAXS, 2, ADDR_IMMEDIATE, 2, 0 },{ CPY, 3, ADDR_ABSOLUTE, 4, 0 },{ CMP, 3, ADDR_ABSOLUTE, 4, 0 },{ DEC, 3, ADDR_ABSOLUTE, 6, 0 },{ SDCP, 3, ADDR_ABSOLUTE, 6, 0 },
 	{ BNE, 2, ADDR_RELATIVE, 2, 2 },{ CMP, 2, ADDR_INDIRECT_Y, 5, 1 },{ SKIL, 0, ADDR_IMPLICIT, 257, 0 },{ SDCP, 2, ADDR_INDIRECT_Y, 8, 0 },{ SNOP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ CMP, 2, ADDR_ZERO_PAGE_X, 4, 0 },{ DEC, 2, ADDR_ZERO_PAGE_X, 6, 0 },{ SDCP, 2, ADDR_ZERO_PAGE_X, 6, 0 },
@@ -570,6 +581,20 @@ bool cpu_6502::step(bool log)
 	bool store_only = (instruction == STA || instruction == STX || instruction == STY || instruction == SSAX ||
 	                   instruction == SAHX || instruction == STAS || instruction == SSHY || instruction == SSHX);
 
+	// Read-modify-write instructions: the operand is read, written back unchanged, then written again.
+	const bool rmw = !store_only && (instruction == ASL || instruction == LSR || instruction == ROL || instruction == ROR ||
+	                                 instruction == INC || instruction == DEC || instruction == SSLO || instruction == SRLA ||
+	                                 instruction == SSRE || instruction == SRRA || instruction == SDCP || instruction == SISB ||
+	                                 instruction == SLAS) && addressing_mode != ADDR_ACCUMULATOR;
+	// Indexed accesses first read from the address before the page-crossing correction: always for
+	// stores and read-modify-write, only when a page is crossed for loads (spec O-33).
+	const bool write_type = store_only || rmw;
+	unsigned char rmw_orig = 0;
+
+	// All bus accesses of the instruction happen at its end as far as the PPU is concerned: FCEUX
+	// charges the whole base cost before executing (spec O-33).
+	pending_instruction_cycles = (unsigned char)instruction_cycles;
+
 	switch (addressing_mode)
 	{
 	case ADDR_NONE:
@@ -600,28 +625,46 @@ bool cpu_6502::step(bool log)
 		op16 = OPERAND16;
 		if (!store_only) temp = mem_read(op16);
 		break;
-	case ADDR_ABSOLUTE_X:
-		op16 = OPERAND16;
-		if (!store_only) temp = mem_read(ADDRESS_ADD_X(op16));
-		if (PAGE_CROSSED(op16, ADDRESS_ADD_X(op16)))
-			instruction_cycles += page_crossed_extra_cycles;
-		break;
+		case ADDR_ABSOLUTE_X:
 	case ADDR_ABSOLUTE_Y:
+	{
 		op16 = OPERAND16;
-		if (!store_only) temp = mem_read(ADDRESS_ADD_Y(op16));
-		if (PAGE_CROSSED(op16, ADDRESS_ADD_Y(op16)))
+		const unsigned short eff = (addressing_mode == ADDR_ABSOLUTE_X) ? ADDRESS_ADD_X(op16) : ADDRESS_ADD_Y(op16);
+		const bool crossed = PAGE_CROSSED(op16, eff);
+		if (write_type)
+			mem_read((unsigned short)((eff & 0x00FF) | (op16 & 0xFF00)));
+		else if (crossed)
+			mem_read((unsigned short)(eff ^ 0x0100));
+		if (crossed)
+		{
 			instruction_cycles += page_crossed_extra_cycles;
+			pending_instruction_cycles = (unsigned char)instruction_cycles;
+		}
+		if (!store_only) temp = mem_read(eff);
 		break;
+	}
 	case ADDR_INDIRECT_X:
 		op8 = OPERAND8;
 		if (!store_only) temp = mem_read(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)));
 		break;
 	case ADDR_INDIRECT_Y:
+	{
 		op8 = OPERAND8;
-		if (!store_only) temp = mem_read(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)));
-		if (PAGE_CROSSED(ADDRESS_ZERO_PAGE_WRAP(op8), ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8))))
+		const unsigned short ptr = ADDRESS_ZERO_PAGE_WRAP(op8);
+		const unsigned short eff = ADDRESS_ADD_Y(ptr);
+		const bool crossed = PAGE_CROSSED(ptr, eff);
+		if (write_type)
+			mem_read((unsigned short)((eff & 0x00FF) | (ptr & 0xFF00)));
+		else if (crossed)
+			mem_read((unsigned short)(eff ^ 0x0100));
+		if (crossed)
+		{
 			instruction_cycles += page_crossed_extra_cycles;
+			pending_instruction_cycles = (unsigned char)instruction_cycles;
+		}
+		if (!store_only) temp = mem_read(eff);
 		break;
+	}
 	case ADDR_JMP_ABSOLUTE:
 		temp_rpc = OPERAND16;
 		break;
@@ -632,6 +675,7 @@ bool cpu_6502::step(bool log)
 		break;
 	}
 
+	rmw_orig = temp;
 	rpc += instruction_size;
 	pending_instruction_cycles = (unsigned char)instruction_cycles;
 	if (instruction_size > 0 && !store_only)
@@ -748,6 +792,7 @@ bool cpu_6502::step(bool log)
 		STACK_PUSH(rp | 0x10);  // B and bit 5 are set in the pushed copy (spec O-6)
 		SET_INTERRUPT(1);
 		rpc = *((unsigned short*)(mem + 0xFFFE));
+		rpi |= 0x04;   // no IRQ right after BRK (spec O-30)
 		break;
 	case BVC:
 		if (GET_OVERFLOW() == 0)
@@ -916,6 +961,7 @@ bool cpu_6502::step(bool log)
 		rp = rp | 0x20; // bit 5 is always 1
 		rp = rp & 0xef; // bit 4 (B flag) is normally 0
 		STACK_POP_PC();
+		rpi = rp;   // RTI's new I flag is seen by the very next IRQ check (spec O-30)
 		break;
 	case RTS:
 		STACK_POP_PC();
@@ -1008,8 +1054,8 @@ bool cpu_6502::step(bool log)
 		SET_CARRY((ra >> 6) & 0x01);
 		SET_OVERFLOW(((ra >> 6) ^ (ra >> 5)) & 0x01);
 		break;
-	case SXAA:   // unstable on hardware; unverified against FCEUX
-		ra = rx & temp;
+	case SXAA:   // unstable on hardware; FCEUX behaves as A = (A | $EE) & X & imm (spec O-31)
+		ra = (unsigned char)((ra | 0xEE) & rx & temp);
 		SET_ZERO(ra);
 		SET_NEGATIVE_BY_BIT(ra);
 		break;
@@ -1034,6 +1080,8 @@ bool cpu_6502::step(bool log)
 		rx = rsp;
 		SET_ZERO(ra);
 		SET_NEGATIVE_BY_BIT(ra);
+		store = true;       // FCEUX treats LAS as read-modify-write: the operand is written back
+		temp_out = temp;
 		break;
 	case SAHX:
 	case STAS:
@@ -1049,9 +1097,13 @@ bool cpu_6502::step(bool log)
 			else if (instruction == STAS) { rsp = (unsigned char)(ra & rx); v = rsp; }
 			else if (instruction == SSHY) v = ry;
 			else                          v = rx;
-			v = (unsigned char)(v & ((base >> 8) + 1));
 			unsigned short addr = (unsigned short)(base + idx);
-			if (PAGE_CROSSED(base, addr))
+			// AHX/TAS use the high byte of the base address, SHY/SHX that of the indexed address.
+			const unsigned short hi_src = (instruction == SSHY || instruction == SSHX) ? addr : base;
+			v = (unsigned char)(v & ((hi_src >> 8) + 1));
+			// SHY/SHX always replace the target's high byte by the stored value (spec O-31); the
+			// AHX/TAS stores write to the plain effective address.
+			if (instruction == SSHY || instruction == SSHX)
 				addr = (unsigned short)((addr & 0x00FF) | (v << 8));
 			mem_write(addr, v);
 		}
@@ -1176,18 +1228,23 @@ bool cpu_6502::step(bool log)
 			VAR_ZERO_PAGE_Y(op8) = temp_out;
 			break;
 		case ADDR_ABSOLUTE:
+			if (rmw) mem_write(op16, rmw_orig);   // dummy write of the unmodified value
 			mem_write(op16, temp_out);
 			break;
 		case ADDR_ABSOLUTE_X:
+			if (rmw) mem_write(ADDRESS_ADD_X(op16), rmw_orig);   // dummy write of the unmodified value
 			mem_write(ADDRESS_ADD_X(op16), temp_out);
 			break;
 		case ADDR_ABSOLUTE_Y:
+			if (rmw) mem_write(ADDRESS_ADD_Y(op16), rmw_orig);   // dummy write of the unmodified value
 			mem_write(ADDRESS_ADD_Y(op16), temp_out);
 			break;
 		case ADDR_INDIRECT_X:
+			if (rmw) mem_write(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)), rmw_orig);   // dummy write of the unmodified value
 			mem_write(ADDRESS_ZERO_PAGE_WRAP(OPERAND_ADD_X(op8)), temp_out);
 			break;
 		case ADDR_INDIRECT_Y:
+			if (rmw) mem_write(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)), rmw_orig);   // dummy write of the unmodified value
 			mem_write(ADDRESS_ADD_Y(ADDRESS_ZERO_PAGE_WRAP(op8)), temp_out);
 			break;
 		default:
@@ -1228,8 +1285,21 @@ bool cpu_6502::step(bool log)
 	return true;
 }
 
-void cpu_6502::nmi()
+void cpu_6502::arm_delayed_nmi()
 {
+	if (nmi_state == 0) nmi_state = 1;
+}
+
+bool cpu_6502::take_pending_nmi()
+{
+	if (jammed) return false;
+	nmi_state = 0;
+	return nmi();
+}
+
+bool cpu_6502::nmi()
+{
+	if (jammed) return false;
 	STACK_PUSH_PC();
 	STACK_PUSH(rp & 0xEF);  // push P with B flag clear
 	SET_INTERRUPT(1);
@@ -1237,6 +1307,7 @@ void cpu_6502::nmi()
 	data_bus = (unsigned char)(rpc >> 8);
 	cycle += 7;
 	rpi = rp;
+	return true;
 }
 
 bool cpu_6502::irq_pending() const

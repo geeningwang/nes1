@@ -237,9 +237,22 @@ FCEUX computes it lazily at sound-flush time in a form that depends on its sampl
 it. Result after phase 4: all 17 suite entries (the 12 above plus the 5 APU probes) IDENTICAL for 3000 frames at scanline
 level, including `[APUX]` and the instruction hash. Probes: `apu_len_status`, `apu_frame_irq`, `apu_frame_mode`, `apu_dmc_irq` and the random-traffic `apu_fuzz`.
 
+Follow-up (the items that were "not checked against FCEUX"): all done, spec O-30 to O-38.
+
+- **Opcode sweep** (`tool/make_opcode_sweep.py`, run with `run_parity.ps1 -RomDir`): one ROM per non-control-flow opcode
+  (242 ROMs), N variants of random A/X/Y/P/S and operands each, followed by a checksum over RAM. A second mode (`--io`) aims the
+  operands at the PPU, APU/IO, work-RAM and ROM ranges. 120 variants per opcode in both modes are identical. This covered the
+  unstable opcodes (`$8B`, `$AB`, `$93`, `$9B`, `$9C`, `$9E`, `$9F`, `$BB`), all 12 KIL opcodes, and found the RTI/BRK
+  I-flag rule, the CHR-ROM write protection, dummy reads/writes and bus-based OAM DMA, the `$2007` read glitch, the sprites-only
+  tile pipeline and the NMI raised by enabling NMI during vblank (nes1 had none of these).
+- **8x16 sprites and left-column clipping** (background and sprites) with the `ppu_sprite_stress` probe: 64 moving sprites,
+  random CHR, size and mask toggling over time; also found the sprite-0 carry over the frame boundary.
+- **Work-RAM extent**: `mem_extent` probe.
+
+Result after the follow-up: all 19 suite entries (nestest twice, Mappy, color_test and 15 probes) IDENTICAL for 3000 frames at
+scanline level, plus both opcode sweeps (120 variants, 242 opcodes, RAM and I/O modes).
+
 ### Still open
 
-- **Phase 5 (soak)**: scanline-level runs for all ROMs, and the instruction-level text trace comparison on chosen frames.
-- Unverified in nes1: the unstable illegal opcodes (`$8B`, `$AB`, `$93`, `$9B`, `$9C`, `$9E`, `$9F`), the other KIL
-  opcodes, `$6000-$7FFF` work-RAM extent, the exact `268` threshold of O-21, 8x16 sprites, left-column clipping.
-
+- The instruction-level text trace comparison on chosen frames (the per-instruction chained hash is already compared everywhere).
+- Unverified in nes1: the exact `268` threshold of O-21; 8x16 sprites with MMC-style CHR banking and other mappers are out of scope (mapper 0 only).

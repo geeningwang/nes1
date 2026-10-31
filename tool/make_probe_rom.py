@@ -572,12 +572,158 @@ done:
 }
 
 
+def _mem_extent():
+    """Writes a distinct value to addresses all over $4018-$7FFF, then reads them all back into $0300+."""
+    addrs = [0x4018, 0x4019, 0x401F, 0x4020, 0x4100, 0x4FFF, 0x5000, 0x5555, 0x5FFF, 0x6000, 0x6001, 0x60FF,
+             0x6100, 0x6400, 0x67FF, 0x6800, 0x6801, 0x6FFF, 0x7000, 0x7001, 0x77FF, 0x7800, 0x7BFF, 0x7C00,
+             0x7FFE, 0x7FFF, 0x8000, 0xFFF0]
+    w = []
+    r = []
+    for i, a in enumerate(addrs):
+        w.append("    LDA #$%02X\n    STA $%04X" % ((0x21 * (i + 1) + 7) & 0xFF, a))
+    for i, a in enumerate(addrs):
+        r.append("    LDA $%04X\n    STA $%04X" % (a, 0x0300 + i))
+    return PREAMBLE + "\n".join(w) + "\n" + "\n".join(r) + "\ndone:\n    JMP done\n" + STUBS + vectors()
+
+
+PROBES["mem_extent"] = ("work RAM extent and unmapped space between $4018 and $7FFF", _mem_extent())
+
+
+def _sprite_stress():
+    """64 moving sprites over a random background; 8x8/8x16 size and the left-column masks change over time."""
+    import random
+    rng = random.Random(0x5EED)
+    pal = ",".join("$%02X" % rng.randrange(0x40) for _ in range(32))
+    prog = PREAMBLE + wait_vbl(1) + wait_vbl(2) + """
+    LDA #$A7
+    STA $10
+    LDA #$3C
+    STA $11
+    LDA #$3F
+    STA $2006
+    LDA #0
+    STA $2006
+    LDX #0
+pl:
+    LDA paltab,X
+    STA $2007
+    INX
+    CPX #32
+    BNE pl
+    LDA #$20
+    STA $2006
+    LDA #0
+    STA $2006
+    LDX #0
+    LDY #4
+nt:
+    JSR rnd
+    STA $2007
+    INX
+    BNE nt
+    DEY
+    BNE nt
+    LDX #0
+oam:
+    JSR rnd
+    STA $0200,X
+    INX
+    BNE oam
+    LDX #0
+clus:
+    LDA $0200,X
+    AND #$3F
+    CLC
+    ADC #$20
+    STA $0200,X
+    INX
+    INX
+    INX
+    INX
+    CPX #128
+    BNE clus
+    LDA #0
+    STA $00
+    LDA $2002
+    LDA #$80
+    STA $2000
+    LDA #$1E
+    STA $2001
+spin:
+    JMP spin
+rnd:
+    INC $11
+    LDA $10
+    ASL A
+    BCC r1
+    EOR #$1D
+r1:
+    STA $10
+    EOR $11
+    RTS
+paltab:
+    .byte """ + pal + """
+nmi:
+    PHA
+    TXA
+    PHA
+    LDA #$02
+    STA $4014
+    INC $00
+    LDA $00
+    AND #$28
+    ORA #$80
+    STA $2000
+    LDA $00
+    LSR A
+    LSR A
+    LSR A
+    LSR A
+    LSR A
+    LSR A
+    AND #$03
+    ASL A
+    ORA #$18
+    STA $2001
+    LDA $2002
+    LDA $00
+    STA $2005
+    LDA #0
+    STA $2005
+    LDX #0
+mv:
+    INC $0200,X
+    LDA $0203,X
+    CLC
+    ADC #3
+    STA $0203,X
+    INX
+    INX
+    INX
+    INX
+    BNE mv
+    PLA
+    TAX
+    PLA
+    RTI
+irq:
+    RTI
+""" + vectors()
+    chr_data = bytes((rng.randrange(256) & rng.randrange(256)) for _ in range(0x2000))
+    return prog, chr_data
+
+
+_prog, _chr = _sprite_stress()
+PROBES["ppu_sprite_stress"] = ("moving sprites, 8x8/8x16, left-column masks", _prog, _chr)
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "test", "probe")
     os.makedirs(outdir, exist_ok=True)
-    for name, (desc, prog) in sorted(PROBES.items()):
-        data = build_ines(prog)
+    for name, entry in sorted(PROBES.items()):
+        desc, prog = entry[0], entry[1]
+        data = build_ines(prog, entry[2] if len(entry) > 2 else None)
         path = os.path.join(outdir, name + ".nes")
         with open(path, "wb") as f:
             f.write(data)
