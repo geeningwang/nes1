@@ -12,7 +12,11 @@ extern uint8 g_nesdump_apu[0x18];  // last value written to $4000-$4017
 bool        NesDump_Requested(int argc, char** argv);
 bool        NesDump_Open(int argc, char** argv, char* errbuf, int errlen);  // false on bad args
 const char* NesDump_RomPath();
+const char* NesDump_MoviePath();
 int         NesDump_Frames();
+uint32      NesDump_Input(int frame);
+bool        NesDump_FourScore();
+int         NesDump_InputPort(int port);
 void        NesDump_Close();
 
 // Event hooks, called from the emulation core while g_nesdump_active.

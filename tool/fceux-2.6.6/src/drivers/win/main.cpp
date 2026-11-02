@@ -699,19 +699,36 @@ static int RunHeadlessDump(int argc, char *argv[])
 	CreateDirs();
 	SetDirs();
 
+	extern int disableBatteryLoading;
+	disableBatteryLoading = 1;
+	RAMInitOption = 0;
 	if(!FCEUI_LoadGame(NesDump_RomPath(), 1, true))
 	{
 		fprintf(stderr, "error: cannot load ROM %s\n", NesDump_RomPath());
 		NesDump_Close();
 		return 2;
 	}
+	const bool native_movie = NesDump_MoviePath()[0] != 0;
+	if (native_movie && !FCEUI_LoadMovie(NesDump_MoviePath(), true, 0)) {
+		fprintf(stderr, "error: cannot load movie %s\n", NesDump_MoviePath());
+		NesDump_Close();
+		return 2;
+	}
 	FCEUI_SetRegion(0, 0);   // NTSC
 	FCEUI_Sound(44100);      // sound emulation on (no device is opened): length counters, DMC and IRQs run
 	NesDump_InitPC();
+	uint32 pads = 0;
+	if (!native_movie) {
+		FCEUI_SetInputFourscore(NesDump_FourScore());
+		FCEUI_SetInput(0, NesDump_InputPort(0) ? SI_GAMEPAD : SI_NONE, &pads, 0);
+		FCEUI_SetInput(1, NesDump_InputPort(1) ? SI_GAMEPAD : SI_NONE, &pads, 0);
+		FCEUI_SetInputFC(NesDump_InputPort(2) == 3 ? SIFC_4PLAYER : SIFC_NONE, &pads, 0);
+	}
 
 	const int nframes = NesDump_Frames();
 	for(int i = 0; i < nframes; ++i)
 	{
+		pads = NesDump_Input(i + 1);
 		uint8 *gfx = 0;
 		int32 *sound = 0;
 		int32 ssize = 0;

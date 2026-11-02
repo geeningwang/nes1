@@ -1,8 +1,10 @@
 # Headless state dumps: nes1 vs FCEUX
 
-Both emulators can run a ROM with no window, audio or input and write the complete machine state to plain-text files at chosen events. The two emulators use the **same command line** and write the **same file format**, so a dump from nes1 and a dump from FCEUX can be compared with `diff` or with `tool/compare_dumps.py` to find exactly where they diverge.
+Both emulators can run a ROM without a window or sound device and write machine state at chosen events.
+They accept the same dump options and format; deterministic controller replay is optional.
 
-Scope: mapper 0 (NROM) ROMs, NTSC, no controller input (the pads are never pressed).
+Parity scope: mapper 0 (NROM), NTSC. With no input file, pads are neutral.
+See [input_replay.md](input_replay.md) for supported replay devices and current limitations.
 
 ## Command line
 
@@ -26,6 +28,8 @@ Scope: mapper 0 (NROM) ROMs, NTSC, no controller input (the pads are never press
 | `--trace-frames LIST` | Write `trace_fNNNNNN.txt`, one line per instruction, for these frames (columns `PC OP A X Y S P CYCLES SCANLINE DB PL`; `DB` and `PL` are the data-bus and PPU latches before the instruction). |
 | `--dump-insn LIST` | Full dump just before these global instruction numbers (1-based). |
 | `--init-pc ADDR` | Hex. Start at ADDR instead of the reset vector, with P=$24 and S=$FD (nestest: `C000`). |
+| `--input FILE` | Deterministic controller replay, legacy two-pad bytes or NESINPUT 1. |
+| `--movie FILE` | FCEUX-only native FM2 playback for converter verification; incompatible with `--input` and `--init-pc`. |
 
 `LIST` is comma separated: `N`, `A-B`, `A-B/STEP` (every STEP-th value from A), or `all`. Frames are 1-based.
 

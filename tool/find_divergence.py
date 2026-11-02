@@ -28,12 +28,14 @@ import compare_dumps as cd  # noqa: E402
 TIMEOUT_S = 300
 
 
-def run_emu(exe, rom, outdir, frames, extra, init_pc):
+def run_emu(exe, rom, outdir, frames, extra, init_pc, input_file=""):
     if os.path.isdir(outdir):
         shutil.rmtree(outdir)
     cmd = [exe, rom, "--dump", outdir, "--frames", str(frames)] + extra
     if init_pc:
         cmd += ["--init-pc", init_pc]
+    if input_file:
+        cmd += ["--input", input_file]
     try:
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
                            timeout=TIMEOUT_S)
@@ -49,13 +51,15 @@ def run_both(args, tag, frames, extra):
     dirs = {}
     for name, exe in (("nes1", args.nes1), ("fceux", args.fceux)):
         d = os.path.join(args.work, tag, name)
-        run_emu(exe, args.rom, d, frames, extra, args.init_pc)
+        run_emu(exe, args.rom, d, frames, extra, args.init_pc, args.input)
         dirs[name] = d
     return dirs["nes1"], dirs["fceux"]
 
 
 def first_digest_difference(da, db):
     A, B = cd.read_digest(da), cd.read_digest(db)
+    if not A or not B:
+        return ("empty digest", 0, None, None, [])
     for i in range(min(len(A), len(B))):
         if A[i][0] != B[i][0]:
             return ("sequence", i, A[i], B[i], [])
@@ -100,6 +104,7 @@ def main():
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--work", default="divergence_work")
     ap.add_argument("--init-pc", default="")
+    ap.add_argument("--input", default="", help="identical replay file passed through every rerun")
     ap.add_argument("--level", choices=("frame", "scanline"), default="frame")
     ap.add_argument("--timeout", type=int, default=300, help="seconds allowed for one emulator run")
     args = ap.parse_args()

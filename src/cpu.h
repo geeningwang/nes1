@@ -44,9 +44,13 @@ public:
 	// bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
 	unsigned char joypad1_state;
 	unsigned char joypad2_state;
+	unsigned char joypad3_state, joypad4_state;
+	bool input_fourscore, input_famicom4;
+	bool input_port_enabled[2];
 
 private:
 	unsigned char joy_readbit[2];   // next bit of each pad's report; wraps like an 8-bit counter (spec O-39)
+	unsigned char joy_fc_readbit[2];
 	unsigned char last_strobe;      // bit 0 of the last $4016 write
 
 	unsigned char  mem_read(unsigned short addr);

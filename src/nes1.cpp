@@ -452,6 +452,10 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 // text dump of the whole machine state at the requested frame/scanline/PC events.
 static int run_dump_mode(const nesdump::Config& cfg)
 {
+	if (!cfg.movie_file.empty()) {
+		fprintf(stderr, "--movie is only supported by the FCEUX verification runner; use --input\n");
+		return 2;
+	}
 	nesdump::Recorder rec;
 	if (!rec.open(cfg, "nes1"))
 		return 2;
@@ -464,9 +468,18 @@ static int run_dump_mode(const nesdump::Config& cfg)
 	unsigned char* screen_buf = new unsigned char[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
 	memset(screen_buf, 0, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
 	ppu.framebuf = screen_buf;
+	cpu.input_fourscore = cfg.input.fourscore;
+	cpu.input_famicom4 = cfg.input.ports[2] == 3;
+	cpu.input_port_enabled[0] = cfg.input.ports[0] == 1;
+	cpu.input_port_enabled[1] = cfg.input.ports[1] == 1;
 
 	for (int f = 1; f <= cfg.frames; f++)
 	{
+		const uint32_t pads = cfg.input_at(f);
+		cpu.joypad1_state = (unsigned char)pads;
+		cpu.joypad2_state = (unsigned char)(pads >> 8);
+		cpu.joypad3_state = (unsigned char)(pads >> 16);
+		cpu.joypad4_state = (unsigned char)(pads >> 24);
 		dumper.begin_frame();
 		run_one_frame(/*suppress_vbl=*/(f <= 2));   // frames 1-2 are ppudead, as in FCEUX
 		dumper.on_frame_end();
@@ -883,4 +896,3 @@ int main(int argc, char* argv[])
 	g_audio.destroy();
     return 0;
 }
-

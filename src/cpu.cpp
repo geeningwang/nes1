@@ -137,7 +137,11 @@ cpu_6502::cpu_6502()
 	apu = nullptr;
 	joypad1_state = 0;
 	joypad2_state = 0;
+	joypad3_state = joypad4_state = 0;
+	input_fourscore = input_famicom4 = false;
+	input_port_enabled[0] = input_port_enabled[1] = true;
 	joy_readbit[0] = joy_readbit[1] = 0;
+	joy_fc_readbit[0] = joy_fc_readbit[1] = 0;
 	last_strobe = 0;
 	data_bus = 0;
 	pending_instruction_cycles = 0;
@@ -207,8 +211,21 @@ unsigned char cpu_6502::mem_read(unsigned short addr)
 	{
 		const int w = addr & 1;
 		const unsigned char pad = w ? joypad2_state : joypad1_state;
-		unsigned char bit = (joy_readbit[w] >= 8) ? 1 : (unsigned char)((pad >> joy_readbit[w]) & 1);
-		++joy_readbit[w];
+		const unsigned char extra = w ? joypad4_state : joypad3_state;
+		const unsigned pos = joy_readbit[w];
+		unsigned char bit = 0;
+		if (input_port_enabled[w]) {
+			bit = pos < 8 ? (unsigned char)((pad >> pos) & 1) :
+				pos < 16 ? (unsigned char)((extra >> (pos & 7)) & 1) : 0;
+			if (!input_fourscore && pos >= 8) bit |= 1;
+			if (input_fourscore && pos == (unsigned)(19 - w)) bit |= 1;
+			++joy_readbit[w];
+		}
+		if (input_famicom4) {
+			const unsigned fp = joy_fc_readbit[w];
+			bit = (unsigned char)((bit & 1) | (fp >= 8 ? 2 : ((extra >> fp) & 1) << 1));
+			if (fp < 8) ++joy_fc_readbit[w];
+		}
 		v = (unsigned char)((data_bus & 0xC0) | bit);
 	}
 	else if (addr >= 0x6000)                 // $6000-$7FFF work RAM, $8000-$FFFF PRG ROM
@@ -263,8 +280,10 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 	// Joypad strobe: the report restarts on the 1 -> 0 edge of bit 0 (spec O-39)
 	if (addr == 0x4016)
 	{
-		if ((last_strobe & 1) && !(val & 1))
+		if ((last_strobe & 1) && !(val & 1)) {
 			joy_readbit[0] = joy_readbit[1] = 0;
+			joy_fc_readbit[0] = joy_fc_readbit[1] = 0;
+		}
 		last_strobe = val;
 		return;
 	}

@@ -744,6 +744,66 @@ d1:
 """ + STUBS + vectors())
 
 
+PROBES["controller_serial"] = ("controller serial reports, held strobe, 256-read wrap", PREAMBLE + """
+loop:
+    LDA #1
+    STA $4016
+    LDA $4016
+    STA $0300
+    LDA $4016
+    STA $0301
+    LDA #0
+    STA $4016
+    LDX #0
+rd:
+    LDA $4016
+    STA $0400,X
+    LDA $4017
+    STA $0500,X
+    INX
+    BNE rd
+    LDA $4016
+    STA $0302
+    LDA $4017
+    STA $0303
+    JMP loop
+""" + STUBS + vectors())
+
+
+PROBES["ppu_bg_toggle_fine_x"] = (
+    "background toggles with fine X: output advances in eight-pixel chunks",
+    PREAMBLE + wait_vbl(1) + wait_vbl(2) + """
+    LDA #$3F
+    STA $2006
+    LDA #0
+    STA $2006
+    LDA #$0F
+    STA $2007
+    LDA #$36
+    STA $2007
+    LDA $2002
+    LDA #0
+    STA $2006
+    STA $2006
+    LDA #3
+    STA $2005
+    LDA #0
+    STA $2005
+loop:
+    LDA #$0A
+    STA $2001
+    LDX #5
+delay:
+    DEX
+    BNE delay
+    LDA #0
+    STA $2001
+    JMP loop
+""" + STUBS + vectors(),
+    bytes([0xFF] * 8 + [0] * 8) * 512,
+)
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "test", "probe")

@@ -60,7 +60,11 @@ bool NesDump_Open(int argc, char** argv, char* errbuf, int errlen)
 
 int NesDump_Frame() { return g_frame; }
 const char* NesDump_RomPath() { return g_cfg.rom.c_str(); }
+const char* NesDump_MoviePath() { return g_cfg.movie_file.c_str(); }
 int         NesDump_Frames()  { return g_cfg.frames; }
+uint32      NesDump_Input(int frame) { return g_cfg.input_at(frame); }
+bool        NesDump_FourScore() { return g_cfg.input.fourscore; }
+int         NesDump_InputPort(int port) { return g_cfg.input.ports[port]; }
 
 // CPU-visible PRG ($8000-$FFFF) and PPU CHR ($0000-$1FFF) through FCEUX's page tables.
 static uint8 g_prg[0x8000];

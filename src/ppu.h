@@ -170,8 +170,8 @@ public:
 private:
 	void line_begin(int sl, long long origin_dots, int lastpixel);
 	void line_sync(int lastpixel);
-	void bg_fetch_tile(int c);
-	void bg_output_tile(int t, int pos);
+	void bg_fetch_tile();
+	void bg_output_tile(int pos);
 	void bg_fill_tile(int pos);
 	void check_sprite_hit(int lastpixel);
 	void prepare_sprites(int sl);
@@ -185,9 +185,7 @@ private:
 	int           rl_sl;
 	int           rl_first;       // first background tile not yet fetched
 	int           rl_px;          // number of 8-pixel tiles already written to the line (the write pointer)
-	unsigned char pend_col[36][8];   // colours of fetched tiles, resolved at fetch time
-	unsigned char pend_op[36][8];    // 1 where the fetched pixel is opaque
-	bool          pend_valid[36];    // tile was fetched during this line
+	unsigned char bg_pipeline[2][8]; // palette indices of the two fetched tiles; retained while rendering is off
 	bool          rl_tofix;       // the end-of-line Y increment of V is still pending
 	long long     rl_origin;      // absolute dot of the line's origin (16 dots before its first pixel)
 	unsigned char ln_col[SCREEN_WIDTH];   // background colour (6-bit) per screen pixel

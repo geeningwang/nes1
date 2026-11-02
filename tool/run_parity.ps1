@@ -23,7 +23,8 @@ param(
     [string]$Fceux,
     [string]$Python,
     [string]$TraceFrames = '',   # compare full instruction traces of these frames (e.g. '1-8,100,3000') instead of the digest search
-    [string]$RomDir = ''     # run every ROM of this directory instead of the standard suite (e.g. the opcode sweep)
+    [string]$RomDir = '',    # run every ROM of this directory instead of the standard suite (e.g. the opcode sweep)
+    [string]$InputFile = ''
 )
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -69,6 +70,7 @@ foreach ($t in $suite) {
     $a = @((Join-Path $PSScriptRoot 'find_divergence.py'), '--nes1', $Nes1, '--fceux', $Fceux, '--rom', $rom,
            '--frames', $Frames, '--work', $out, '--level', $Level, '--timeout', $TimeoutSec) + $t[2]
     }
+    if ($InputFile) { $a += @('--input', $InputFile) }
     $log = & $Python @a 2>&1
     $code = $LASTEXITCODE
     $log | ForEach-Object { Write-Host "    $_" }
@@ -78,6 +80,7 @@ foreach ($t in $suite) {
 
 Write-Host ''
 Write-Host '=== summary'
+if ($results.Count -eq 0) { Write-Host 'ERROR: no suite entries selected'; exit 2 }
 $bad = 0
 foreach ($r in $results) {
     $state = switch ($r.Code) { 0 { 'IDENTICAL' } 1 { 'DIFFERS' } default { 'ERROR (run failed or hung)' } }

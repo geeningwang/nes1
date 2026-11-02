@@ -30,18 +30,24 @@ def frame_list(spec):
             continue
         if "-" in part:
             a, b = part.split("-")
+            if int(a) < 1 or int(b) < int(a):
+                raise ValueError("invalid trace frame range")
             out += list(range(int(a), int(b) + 1))
         else:
+            if int(part) < 1:
+                raise ValueError("trace frames must be positive")
             out.append(int(part))
-    return out
+    return sorted(set(out))
 
 
-def run_emu(exe, rom, outdir, frames, trace_spec, init_pc, timeout):
+def run_emu(exe, rom, outdir, frames, trace_spec, init_pc, timeout, input_file=""):
     if os.path.isdir(outdir):
         shutil.rmtree(outdir)
     cmd = [exe, rom, "--dump", outdir, "--frames", str(frames), "--digest", "--trace-frames", trace_spec]
     if init_pc:
         cmd += ["--init-pc", init_pc]
+    if input_file:
+        cmd += ["--input", input_file]
     try:
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -58,6 +64,8 @@ def compare_file(pa, pb):
         la, lb = fa.read().splitlines(), fb.read().splitlines()
     la = [l for l in la if not l.startswith("#")]
     lb = [l for l in lb if not l.startswith("#")]
+    if not la or not lb:
+        raise ValueError("instruction trace is empty")
     for i in range(min(len(la), len(lb))):
         if la[i] != lb[i]:
             return i, (la, lb)
@@ -89,15 +97,21 @@ def main():
     ap.add_argument("--trace-frames", default=DEFAULT_FRAMES)
     ap.add_argument("--work", default="trace_work")
     ap.add_argument("--init-pc", default="")
+    ap.add_argument("--input", default="")
     ap.add_argument("--timeout", type=int, default=600)
     args = ap.parse_args()
 
-    frames = [f for f in frame_list(args.trace_frames) if f <= args.frames]
+    try:
+        frames = [f for f in frame_list(args.trace_frames) if f <= args.frames]
+    except ValueError as err:
+        ap.error(str(err))
+    if not frames:
+        ap.error("no trace frames selected within the requested run")
     spec = ",".join(str(f) for f in frames)
     dirs = {}
     for name, exe in (("nes1", args.nes1), ("fceux", args.fceux)):
         d = os.path.join(args.work, name)
-        run_emu(exe, args.rom, d, args.frames, spec, args.init_pc, args.timeout)
+        run_emu(exe, args.rom, d, args.frames, spec, args.init_pc, args.timeout, args.input)
         dirs[name] = d
 
     total, bad = 0, 0
@@ -108,7 +122,11 @@ def main():
             print("  frame %d: trace missing (nes1: %s, fceux: %s)" % (f, os.path.exists(pa), os.path.exists(pb)))
             bad += 1
             continue
-        n, res = compare_file(pa, pb)
+        try:
+            n, res = compare_file(pa, pb)
+        except (OSError, ValueError) as err:
+            print("ERROR: frame %d: %s" % (f, err))
+            return 2
         if res is None:
             total += n
         else:

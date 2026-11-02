@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include <climits>
+#include "nesinput.h"
 
 #ifdef _WIN32
 #include <direct.h>
@@ -188,37 +189,20 @@ struct Config {
 	RangeList   dump_insns;         // global instruction numbers (1-based) that get a full dump
 	int         init_pc = -1;       // start execution at this address instead of the reset vector
 	std::string input_file;         // --input FILE: controller state per frame (see input_at)
-	std::vector<uint16_t> input;    // per emulated frame (index 0 = frame 1): low byte pad 1, high byte pad 2
+	std::string movie_file;         // FCEUX-only native FM2 playback, used to validate the converter
+	InputFile input;
 
 	// Controller bits for the 1-based emulated frame (A=1 B=2 Select=4 Start=8 Up=0x10 Down=0x20 Left=0x40 Right=0x80,
-	// pad 1 in the low byte, pad 2 in the next one).  Past the end of the file nothing is pressed.
-	uint16_t input_at(int frame) const
+	// Pads 1..4 occupy successive bytes. Legacy EOF is neutral; versioned runs reject early EOF.
+	uint32_t input_at(int frame) const
 	{
-		return (frame >= 1 && (size_t)frame <= input.size()) ? input[(size_t)frame - 1] : 0;
+		return input.at(frame).pads;
 	}
 
-	// File format: one line per frame, "P1 P2" as hex bytes (the second one optional); '#' starts a comment line.
+	// Legacy "P1 P2" hex bytes or the versioned NESINPUT 1 contract in doc/input_replay.md.
 	bool load_input(std::string& err)
 	{
-		FILE* f = nullptr;
-#ifdef _WIN32
-		if (fopen_s(&f, input_file.c_str(), "r") != 0) f = nullptr;
-#else
-		f = fopen(input_file.c_str(), "r");
-#endif
-		if (!f) { err = "cannot open input file " + input_file; return false; }
-		char line[256];
-		while (fgets(line, sizeof(line), f)) {
-			const char* p = line;
-			while (*p == ' ' || *p == '\t') ++p;
-			if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) continue;
-			char* ep = nullptr;
-			unsigned long a = strtoul(p, &ep, 16), b = 0;
-			if (ep != p) { p = ep; b = strtoul(p, &ep, 16); }
-			input.push_back((uint16_t)((a & 0xFF) | ((b & 0xFF) << 8)));
-		}
-		fclose(f);
-		return true;
+		return input.load(input_file, err);
 	}
 	std::string cmdline;            // echoed to run.txt
 
@@ -246,6 +230,7 @@ struct Config {
 			"  --dump-insn LIST            full dump before these global instruction numbers (1-based)\n"
 			"  --init-pc ADDR              hex; start at ADDR instead of the reset vector (e.g. C000 for nestest)\n"
 			"  --input FILE                controller state per frame: lines 'P1 P2' (hex bytes, A=01 B=02 Sel=04 Start=08 U=10 D=20 L=40 R=80)\n"
+			"  --movie FILE                FCEUX only: native FM2 playback (converter verification)\n"
 			"LIST = N | A-B | A-B/STEP | all, comma separated (inclusive, 1-based frames).\n";
 	}
 
@@ -278,7 +263,16 @@ struct Config {
 			else if (a == "--digest")               { digest = true; }
 			else if (a == "--trace-frames")         { if (!need(v) || !trace_frames.parse(v, err)) return false; }
 			else if (a == "--dump-insn")            { if (!need(v) || !dump_insns.parse(v, err)) return false; }
-			else if (a == "--input")                { if (!need(v)) return false; input_file = v; if (!load_input(err)) return false; }
+			else if (a == "--input") {
+				if (!input_file.empty()) { err = "duplicate --input option"; return false; }
+				if (!need(v)) return false;
+				input_file = v;
+				if (!load_input(err)) return false;
+			}
+			else if (a == "--movie") {
+				if (!movie_file.empty()) { err = "duplicate --movie option"; return false; }
+				if (!need(movie_file)) return false;
+			}
 			else if (a == "--init-pc") {
 				if (!need(v)) return false;
 				char* ep = nullptr;
@@ -308,6 +302,10 @@ struct Config {
 		if (rom.empty())    { err = "no ROM given"; return false; }
 		if (outdir.empty()) { err = "no output directory given"; return false; }
 		if (frames < 1)     { err = "--frames must be >= 1"; return false; }
+		if (!movie_file.empty() && (!input_file.empty() || init_pc >= 0)) {
+			err = "--movie cannot be combined with --input or --init-pc"; return false;
+		}
+		if (!input_file.empty() && (!input.validate_rom(rom, err) || !input.validate_run(frames, err))) return false;
 		return true;
 	}
 };
@@ -455,6 +453,14 @@ public:
 		fprintf(f, "emulator: %s\n", emulator_.c_str());
 		fprintf(f, "cmdline: %s\n", cfg_.cmdline.c_str());
 		fprintf(f, "frames_run: %d\n", frames_run);
+		fprintf(f, "input_file: %s\n", cfg_.input_file.empty() ? "(none)" : cfg_.input_file.c_str());
+		fprintf(f, "native_movie: %s\n", cfg_.movie_file.empty() ? "(none)" : cfg_.movie_file.c_str());
+		fprintf(f, "input_frames_supplied: %llu\n", (unsigned long long)cfg_.input.frames.size());
+		fprintf(f, "input_frames_applied: %llu\n", (unsigned long long)(
+			cfg_.input.frames.size() < (size_t)frames_run ? cfg_.input.frames.size() : (size_t)frames_run));
+		fprintf(f, "input_eof: %s\n", cfg_.input.versioned ? "error" : "neutral");
+		fprintf(f, "input_fourscore: %d\ninput_ports: %d,%d,%d\n", cfg_.input.fourscore ? 1 : 0,
+			cfg_.input.ports[0], cfg_.input.ports[1], cfg_.input.ports[2]);
 		fprintf(f, "instructions: %llu\n", (unsigned long long)insn_total_);
 		fprintf(f, "events: frame=%d scanline=%d pc=%d insn=%d\n", counts_[0], counts_[1], counts_[2], counts_[3]);
 		for (size_t i = 0; i < cfg_.pcs.size(); ++i)
