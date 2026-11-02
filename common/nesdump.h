@@ -1,6 +1,6 @@
 // nesdump.h - shared by nes1 and FCEUX.
 //
-// Header-only, no emulator dependencies.  Defines the plain-text "NESDUMP 2"
+// Header-only, no emulator dependencies.  Defines the plain-text "NESDUMP 3"
 // state-dump format, the digest format, the per-instruction trace, the command
 // line and the trigger logic, so both emulators produce byte-comparable output.
 // Each emulator fills a nesdump::State and calls Recorder::write_event(), and
@@ -65,7 +65,11 @@ struct State {
 	uint8_t  apuz[0x20];      // CPU-visible APU internals, see doc/parity_spec.md "APUX layout"
 
 	uint8_t  ram[0x800];      // CPU RAM $0000-$07FF
+	uint8_t  wram[0x2000];    // cartridge work RAM, CPU $6000-$7FFF
 	uint8_t  nt[0x800];       // physical nametable RAM: page A (0-3FF), page B (400-7FF)
+	uint8_t  ntv[0x1000];     // logical nametables $2000-$2FFF as the PPU addresses them (after mirroring)
+	uint8_t  io[0x10];        // controller serial state, see doc/state_dump.md "IO layout"
+	uint8_t  irq[8];          // pending interrupt state, see doc/state_dump.md "IRQ layout"
 	uint8_t  pal[0x20];       // palette RAM
 	uint8_t  oam[0x100];      // sprite RAM
 	const uint8_t* chr;       // 0x2000 bytes, PPU $0000-$1FFF
@@ -333,6 +337,7 @@ public:
 		std::string path = join(cfg_.digest ? "digest.txt" : "events.txt");
 		events_ = open_wb(path.c_str());
 		if (!events_) { fprintf(stderr, "cannot create %s\n", path.c_str()); return false; }
+		if (cfg_.digest) fputs("NESDIGEST 3\n", events_);
 		return true;
 	}
 
@@ -397,7 +402,7 @@ public:
 	{
 		FILE* f = open_wb(join("rom.txt").c_str());
 		if (!f) return false;
-		fprintf(f, "NESROM 2\n");
+		fprintf(f, "NESROM 3\n");
 		fprintf(f, "PRG_HASH=%016llX\nCHR_HASH=%016llX\n", (unsigned long long)hash64(s.prg, 0x8000),
 		        (unsigned long long)hash64(s.chr, 0x2000));
 		put_hex(f, "PRG", 0x8000, s.prg, 0x8000);
@@ -456,6 +461,7 @@ public:
 		if (trace_) { fclose(trace_); trace_ = nullptr; }
 		FILE* f = open_wb(join("run.txt").c_str());
 		if (!f) return;
+		fprintf(f, "format: %s\n", cfg_.digest ? "NESDIGEST 3" : "NESDUMP 3");
 		fprintf(f, "emulator: %s\n", emulator_.c_str());
 		fprintf(f, "cmdline: %s\n", cfg_.cmdline.c_str());
 		fprintf(f, "frames_run: %d\n", frames_run);
@@ -477,7 +483,7 @@ public:
 private:
 	static void le(uint8_t* b, int& n, uint64_t v, int bytes) { for (int i = 0; i < bytes; ++i) b[n++] = (uint8_t)(v >> (8 * i)); }
 
-	struct Sections { uint64_t cpu, ppu, bus, apu, ram, nt, pal, oam, chr, prg, fb, insn, all; };
+	struct Sections { uint64_t cpu, ppu, bus, apu, ram, wram, nt, ntv, pal, oam, chr, prg, fb, io, irq, insn, all; };
 
 	Sections hash_sections(const State& s, const uint8_t* pal, const uint8_t* fb, int rows) const
 	{
@@ -502,7 +508,11 @@ private:
 			h.apu = hash64(ab, sizeof(ab));
 		}
 		h.ram = hash64(s.ram, sizeof(s.ram));
+		h.wram = hash64(s.wram, sizeof(s.wram));
 		h.nt  = hash64(s.nt, sizeof(s.nt));
+		h.ntv = hash64(s.ntv, sizeof(s.ntv));
+		h.io  = hash64(s.io, sizeof(s.io));
+		h.irq = hash64(s.irq, sizeof(s.irq));
 		h.pal = hash64(pal, 0x20);
 		h.oam = hash64(s.oam, sizeof(s.oam));
 		h.chr = hash64(s.chr, 0x2000);
@@ -510,7 +520,7 @@ private:
 		h.fb  = hash64(fb, (size_t)rows * kFbWidth, (uint64_t)rows);
 		h.insn = mix64(frame_hash_, (uint64_t)frame_insn_);
 		uint64_t all = 0;
-		const uint64_t parts[] = { h.cpu, h.ppu, h.bus, h.apu, h.ram, h.nt, h.pal, h.oam, h.chr, h.prg, h.fb, h.insn };
+		const uint64_t parts[] = { h.cpu, h.ppu, h.bus, h.apu, h.ram, h.wram, h.nt, h.ntv, h.pal, h.oam, h.chr, h.prg, h.fb, h.io, h.irq, h.insn };
 		for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i) all = mix64(all, parts[i]);
 		h.all = all;
 		return h;
@@ -521,13 +531,15 @@ private:
 		Sections h = hash_sections(s, pal, fb, rows);
 		fprintf(events_,
 		        "%06d %s f=%d sl=%d pc=%04X cyc=%llu v=%04X st=%02X ov=%d,%d,%d,%d ALL=%016llX CPU=%016llX PPU=%016llX BUS=%016llX APU=%016llX RAM=%016llX "
-		        "NT=%016llX PAL=%016llX OAM=%016llX CHR=%016llX PRG=%016llX FB=%016llX INSN=%016llX/%u\n",
+		        "WRAM=%016llX NT=%016llX NTV=%016llX PAL=%016llX OAM=%016llX CHR=%016llX PRG=%016llX FB=%016llX IO=%016llX IRQ=%016llX "
+		        "INSN=%016llX/%u\n",
 		        ++seq_, fname.c_str(), s.frame, s.scanline, s.pc, (unsigned long long)s.cycles, s.v & 0x7FFF, s.status, s.ov[0], s.ov[1], s.ov[2], s.ov[3],
 		        (unsigned long long)h.all, (unsigned long long)h.cpu, (unsigned long long)h.ppu,
-		        (unsigned long long)h.bus, (unsigned long long)h.apu, (unsigned long long)h.ram, (unsigned long long)h.nt,
+		        (unsigned long long)h.bus, (unsigned long long)h.apu, (unsigned long long)h.ram,
+		        (unsigned long long)h.wram, (unsigned long long)h.nt, (unsigned long long)h.ntv,
 		        (unsigned long long)h.pal, (unsigned long long)h.oam, (unsigned long long)h.chr,
-		        (unsigned long long)h.prg, (unsigned long long)h.fb, (unsigned long long)frame_hash_mix(),
-		        (unsigned)frame_insn_);
+		        (unsigned long long)h.prg, (unsigned long long)h.fb, (unsigned long long)h.io, (unsigned long long)h.irq,
+		        (unsigned long long)frame_hash_mix(), (unsigned)frame_insn_);
 	}
 	uint64_t frame_hash_mix() const { return mix64(frame_hash_, (uint64_t)frame_insn_); }
 
@@ -536,7 +548,7 @@ private:
 		FILE* f = open_wb(join(fname).c_str());
 		if (!f) { fprintf(stderr, "cannot create %s\n", fname.c_str()); return false; }
 
-		fprintf(f, "NESDUMP 2\n");
+		fprintf(f, "NESDUMP 3\n");
 		fprintf(f, "event: %s\n", s.event);
 		fprintf(f, "frame: %d\n", s.frame);
 		fprintf(f, "scanline: %d\n", s.scanline);
@@ -553,7 +565,11 @@ private:
 		put_hex(f, "APU", 0x4000, s.apu, 0x18);
 		put_hex(f, "APUX", 0x0000, s.apuz, 0x20);
 		put_hex(f, "RAM", 0x0000, s.ram, 0x800);
+		put_hex(f, "WRAM", 0x6000, s.wram, 0x2000);
 		put_hex(f, "NT", 0x2000, s.nt, 0x800);
+		put_hex(f, "NTV", 0x2000, s.ntv, 0x1000);
+		put_hex(f, "IO", 0x0000, s.io, 0x10);
+		put_hex(f, "IRQ", 0x0000, s.irq, 8);
 		put_hex(f, "PAL", 0x3F00, pal, 0x20);
 		put_hex(f, "OAM", 0x0000, s.oam, 0x100);
 		put_hex(f, "CHR", 0x0000, s.chr, 0x2000);

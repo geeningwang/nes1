@@ -65,7 +65,15 @@ struct NesDumpAccess {
 		s.apuz[22] = apu.dmc_have_sample;  s.apuz[23] = apu.dmc_have_dma;
 		s.apuz[24] = apu.dmc_buf;  s.apuz[25] = apu.dmc_dac;  s.apuz[26] = apu.dmc_format;
 		memcpy(s.ram, cpu.mem, 0x800);
+		memcpy(s.wram, cpu.mem + 0x6000, 0x2000);
 		memcpy(s.nt, ppu.mem + 0x2000, 0x800);
+		for (unsigned i = 0; i < 0x1000; ++i) s.ntv[i] = ppu.mem[ppu.mirror_nt_addr((unsigned short)(0x2000 + i))];
+		s.io[0] = cpu.joy_readbit[0];  s.io[1] = cpu.joy_readbit[1];
+		s.io[2] = cpu.joy_fc_readbit[0];  s.io[3] = cpu.joy_fc_readbit[1];
+		s.io[4] = cpu.last_strobe;
+		s.irq[0] = cpu.nmi_state;   // 0 none, 1 armed by a $2000 write, 2 due at the next instruction boundary
+		s.irq[1] = apu.irq_line() ? 1 : 0;
+		s.irq[2] = cpu.jammed ? 1 : 0;
 		memcpy(s.pal, ppu.mem + 0x3F00, 0x20);
 		memcpy(s.oam, ppu.oam, 0x100);
 		s.chr = ppu.mem;

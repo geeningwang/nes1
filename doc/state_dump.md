@@ -60,7 +60,7 @@ These are defined identically in both emulators:
 rom.txt          PRG ($8000-$FFFF as the CPU sees it) and CHR (8 KB), written once
 events.txt       one line per dump, in the order they happened (digest.txt instead, with --digest)
 trace_f000010.txt  with --trace-frames: every instruction of that frame
-run.txt          emulator name, full command line, frames run, event counts, PC hit counts
+run.txt          format (NESDUMP 3 / NESDIGEST 3), emulator name, full command line, frames run, event counts, PC hit counts
 frame_f000010.txt
 scanline_f000005_s100.txt
 pc_C06F_n0001.txt
@@ -68,12 +68,12 @@ pc_C06F_n0001.txt
 
 `run.txt` is the only file that names the emulator; the dump files contain no emulator-specific text, so equal state gives byte-identical files.
 
-## Dump file format (`NESDUMP 2`)
+## Dump file format (`NESDUMP 3`)
 
 Plain text, `\n` line endings. Memory is printed 16 bytes per row as `ADDR: xx xx ...`, so a `diff` line identifies the address.
 
 ```
-NESDUMP 2
+NESDUMP 3
 event: scanline            frame | scanline | pc | insn
 frame: 5
 scanline: 100
@@ -88,7 +88,11 @@ DB=02 PPULATCH=00    CPU data-bus latch and PPU I/O latch (open-bus values)
 [APU] 4000-4017      last value written to each register
 [APUX] 0000-001F     CPU-visible APU internals (length counters, frame counter, IRQ flags, DMC); layout in parity_spec.md 1.9
 [RAM] 0000-07FF      CPU RAM
+[WRAM] 6000-7FFF     cartridge work RAM as the CPU sees it
 [NT] 2000-27FF       physical nametable RAM: page A (first 1 KB), page B (second 1 KB)
+[NTV] 2000-2FFF      logical nametables as the PPU addresses them, after mirroring
+[IO] 0000-000F       controller serial state; layout below
+[IRQ] 0000-0007      pending interrupt state; layout below
 [PAL] 3F00-3F1F
 [OAM] 0000-00FF
 [CHR] 0000-1FFF
@@ -108,8 +112,30 @@ Notes on what is and is not compared:
 - `[PAL]` is canonical: `$3F10/14/18/1C` show the values of `$3F00/04/08/0C` and entries are masked to 6 bits.
 - `[NT]` is physical RAM, so it does not depend on how each emulator addresses the four logical nametables; `MIRROR` records which mirroring is active.
 - PRG and CHR are checked through the hash lines in every dump, and in full in `rom.txt` (or in every dump with `--rom-every`).
+- `[NTV]` shows what the PPU reads at `$2000-$2FFF`, read straight through each emulator's mirroring tables without any access side effects. Together with `MIRROR` it catches a wrong mirroring that `[NT]` alone cannot.
+- `[WRAM]` is the whole `$6000-$7FFF` range (see parity_spec.md O-32).
 - `[BUS]` holds the two latches that decide what reads of unmapped addresses and of write-only PPU registers return.
 - `P` is architectural (bit 5 = 1, bit 4 = 0). `[FB]` and the instruction hash are defined in [parity_spec.md](parity_spec.md).
+
+### `[IO]` layout (bytes, bit-for-bit between the emulators)
+
+| Offset | Meaning |
+|-------:|---------|
+| 0, 1 | read counter of the pad on `$4016` / `$4017` (standard pad and Four Score; wraps like an 8-bit counter, O-39) |
+| 2, 3 | read counter of the Famicom four-player adapter on `$4016` / `$4017` |
+| 4 | bit 0 of the last `$4016` write (the strobe) |
+| 5-15 | 0 |
+
+### `[IRQ]` layout
+
+| Offset | Meaning |
+|-------:|---------|
+| 0 | NMI request: 0 none, 1 armed by a `$2000` write (becomes due at the next instruction boundary, O-38), 2 due |
+| 1 | 1 while the frame-counter or DMC IRQ line is asserted (not masked by the I flag; P is in `[CPU]`) |
+| 2 | 1 if the CPU is jammed by a KIL opcode |
+| 3-7 | 0 |
+
+A reset request (FCEUX `IQRESET`) is serviced before the next instruction in both emulators and is never visible in a dump.
 
 ## Comparing
 
@@ -119,18 +145,20 @@ python tool/compare_dumps.py <dirA> <dirB> [--max N] [--all] [--summary] [--sect
 
 Events are compared in the order of `events.txt`. The report names the first diverging event, then for each differing event lists the CPU/PPU fields (`A=... B=...`) and the memory addresses that differ (`ADDR: A/B`). `--summary` adds one line per field with the number of differing events and the first one. Exit status is 0 if identical, 1 if they differ, 2 on usage errors. Plain `diff -r dirA dirB` also works.
 
+The tool accepts only version 3. It exits with status 2 (never "identical") for a dump or digest of another version, a missing or short section, a missing `END` line, a digest line with a missing field, a folder pair that mixes digests and full dumps, a missing `events.txt`, and a `run.txt` manifest (`format:` and `events:` counts) that disagrees with the files on disk. `tool/test_dump_format.py` checks each of these, and that changing one byte of every section (including the new ones) is reported as a difference in full and digest mode.
+
 ## Digest mode and finding the first divergence
 
 Full dumps are about 230 KB each, so long runs use `--digest`: one text line per event with a 64-bit hash for
-each section (see [parity_spec.md](parity_spec.md), section 1.7). `compare_dumps.py` compares two digest
-folders and names the first differing event and fields. `tool/find_divergence.py` automates the whole drill-down
+each section (see [parity_spec.md](parity_spec.md), section 1.7). The file starts with `NESDIGEST 3`. `compare_dumps.py` compares two digest
+folders line by line without holding them in memory (movies run for hundreds of thousands of frames) and names the first differing event and fields. `tool/find_divergence.py` automates the whole drill-down
 (first differing frame, then scanline, then instruction trace, then field-level diff), and
 `tool/run_parity.ps1` runs it for all repo ROMs and probe ROMs. See [parity_plan.md](parity_plan.md).
 
 ### Digest line
 
 ```
-000123 scanline_f000005_s100.txt f=5 sl=100 pc=C06F cyc=133103 v=2073 st=40 ov=4,10,1,6 ALL=... CPU=... PPU=... BUS=... APU=... RAM=... NT=... PAL=... OAM=... CHR=... PRG=... FB=... INSN=hash/count
+000123 scanline_f000005_s100.txt f=5 sl=100 pc=C06F cyc=133103 v=2073 st=40 ov=4,10,1,6 ALL=... CPU=... PPU=... BUS=... APU=... RAM=... WRAM=... NT=... NTV=... PAL=... OAM=... CHR=... PRG=... FB=... IO=... IRQ=... INSN=hash/count
 ```
 
 `v` and `st` (V register and PPU status) and `ov` (the CPU's overshoot in dots at the end of each of the line's four time slices, 256 + 6 + 63 + 16) are human-readable debugging aids; they are not part of any hash. The hashes cover the same bytes the full dump prints.

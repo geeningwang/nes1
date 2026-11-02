@@ -28,7 +28,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertEqual(command[-2:], ["--input", "movie.in"])
 
     def test_empty_digests_are_not_identical(self):
-        with mock.patch.object(find_divergence.cd, "read_digest", return_value=[]):
+        with mock.patch.object(find_divergence.cd, "iter_digest", return_value=iter(())):
             self.assertEqual(find_divergence.first_digest_difference("a", "b")[0], "empty digest")
 
     def test_empty_traces_are_errors(self):

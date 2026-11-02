@@ -8,24 +8,51 @@ the same event files.  Events are compared in the chronological order recorded i
 events.txt.  For each differing event the report lists the differing CPU/PPU fields
 and, for memory sections, the exact addresses and byte values that differ.
 
-Exit status: 0 if the dumps are identical, 1 if they differ, 2 on usage/IO errors.
+Only the current format (NESDUMP 3 / NESDIGEST 3) is accepted. A dump with another version, a
+missing or truncated section, a missing END line, or a manifest (run.txt) that disagrees with the
+event files is an error, never "identical".
+
+Exit status: 0 if the dumps are identical, 1 if they differ, 2 on usage, IO or format errors.
 """
 import argparse
+import itertools
 import os
 import re
 import sys
 
-HEX_SECTIONS = ("APU", "APUX", "RAM", "NT", "PAL", "OAM", "CHR", "FB", "PRG")
+DUMP_VERSION = "NESDUMP 3"
+DIGEST_VERSION = "NESDIGEST 3"
+
+# section -> number of bytes it must contain
+HEX_SIZES = {"APU": 0x18, "APUX": 0x20, "RAM": 0x800, "WRAM": 0x2000, "NT": 0x800, "NTV": 0x1000,
+             "PAL": 0x20, "OAM": 0x100, "CHR": 0x2000, "FB": 240 * 256, "IO": 0x10, "IRQ": 8}
+HEX_SECTIONS = tuple(HEX_SIZES) + ("PRG",)   # PRG is only present in dumps made with --rom-every
+SCALAR_SECTIONS = ("CPU", "PPU", "BUS")
+CRC_KEYS = ("PRG_HASH", "CHR_HASH", "INSN_HASH", "INSN_COUNT")
+
+
+class DumpFormatError(ValueError):
+    pass
 
 
 def parse_dump(path):
     """Return {'header': {k: v}, 'CPU': {k: v}, 'PPU': {k: v}, 'APU'..: {addr: byte}, 'CRC': {k: v}}."""
     out = {"header": {}, "CPU": {}, "PPU": {}, "BUS": {}, "CRC": {}}
     section = None
+    first = True
+    ended = False
     with open(path, "r", newline="") as f:
         for raw in f:
             line = raw.rstrip("\n")
-            if not line or line == "END" or line.startswith("NESDUMP") or line.startswith("NESROM"):
+            if first:
+                first = False
+                if line != DUMP_VERSION:
+                    raise DumpFormatError("%s: expected %r, found %r" % (path, DUMP_VERSION, line[:40]))
+                continue
+            if line == "END":
+                ended = True
+                continue
+            if not line or line.startswith("NESROM"):
                 continue
             m = re.match(r"^\[(\w+)\](?: ([0-9A-F]{4})-([0-9A-F]{4}))?$", line)
             if m:
@@ -51,6 +78,22 @@ def parse_dump(path):
             if "=" in line:  # PRG_HASH=... / CHR_HASH=... / INSN_HASH=... / INSN_COUNT=...
                 k, _, v = line.partition("=")
                 out["CRC"][k] = v
+    if first or not ended:
+        raise DumpFormatError("%s: truncated dump (no END line)" % path)
+    for name in SCALAR_SECTIONS:
+        if not out[name]:
+            raise DumpFormatError("%s: missing section [%s]" % (path, name))
+    for name, size in HEX_SIZES.items():
+        if name not in out:
+            raise DumpFormatError("%s: missing section [%s]" % (path, name))
+        if len(out[name]) != size:
+            raise DumpFormatError("%s: section [%s] has %d bytes, expected %d" % (path, name, len(out[name]), size))
+    for key in CRC_KEYS:
+        if key not in out["CRC"]:
+            raise DumpFormatError("%s: missing %s" % (path, key))
+    for key in ("event", "frame", "scanline"):
+        if key not in out["header"]:
+            raise DumpFormatError("%s: missing header field %s" % (path, key))
     return out
 
 
@@ -117,36 +160,60 @@ def read_run(d):
     return info
 
 
-DIGEST_FIELDS = ("CPU", "PPU", "BUS", "APU", "RAM", "NT", "PAL", "OAM", "CHR", "PRG", "FB", "INSN")
+DIGEST_FIELDS = ("CPU", "PPU", "BUS", "APU", "RAM", "WRAM", "NT", "NTV", "PAL", "OAM", "CHR", "PRG", "FB",
+                 "IO", "IRQ", "INSN")
+DIGEST_REQUIRED = ("ALL", "f", "sl", "pc", "cyc") + DIGEST_FIELDS
+
+
+def iter_digest(d):
+    """Yield (name, {field: value, ...}) in file order, one line at a time (digests can be very large)."""
+    path = os.path.join(d, "digest.txt")
+    with open(path) as f:
+        if f.readline().rstrip("\n") != DIGEST_VERSION:
+            raise DumpFormatError("%s: expected %r on the first line" % (path, DIGEST_VERSION))
+        for number, ln in enumerate(f, 2):
+            parts = ln.split()
+            kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
+            missing = [k for k in DIGEST_REQUIRED if k not in kv]
+            if len(parts) < 3 or missing:
+                raise DumpFormatError("%s:%d: malformed digest line (missing %s)" % (path, number, ", ".join(missing) or "fields"))
+            yield parts[1], kv
 
 
 def read_digest(d):
     """List of (name, {field: value, ...}) in file order."""
-    out = []
-    with open(os.path.join(d, "digest.txt")) as f:
-        for ln in f:
-            parts = ln.split()
-            if len(parts) < 3:
-                continue
-            kv = dict(p.split("=", 1) for p in parts[2:] if "=" in p)
-            out.append((parts[1], kv))
-    return out
+    return list(iter_digest(d))
+
+
+def check_manifest(d, kind, events):
+    """The run.txt manifest must name the current format and agree with the number of events on disk."""
+    info = read_run(d)
+    want = DIGEST_VERSION if kind == "digest" else DUMP_VERSION
+    if info.get("format") != want:
+        raise DumpFormatError("%s: manifest format is %r, expected %r" % (d, info.get("format"), want))
+    m = re.match(r"^frame=(\d+) scanline=(\d+) pc=(\d+) insn=(\d+)$", info.get("events", ""))
+    if not m:
+        raise DumpFormatError("%s: manifest has no event counts" % d)
+    if sum(int(x) for x in m.groups()) != events:
+        raise DumpFormatError("%s: manifest records %s events but %d are present" % (d, info["events"], events))
+    return info
 
 
 def compare_digests(args):
-    A, B = read_digest(args.dir_a), read_digest(args.dir_b)
-    print("digest events: A=%d B=%d" % (len(A), len(B)))
     status = 0
     first = None
     by_field = {}
-    n = min(len(A), len(B))
-    for i in range(n):
-        na, ka = A[i]
-        nb, kb = B[i]
+    na_count = nb_count = 0
+    for i, (ea, eb) in enumerate(itertools.zip_longest(iter_digest(args.dir_a), iter_digest(args.dir_b))):
+        na_count += ea is not None
+        nb_count += eb is not None
+        if ea is None or eb is None:
+            continue
+        (na, ka), (nb, kb) = ea, eb
         if na != nb:
             print("event sequence differs at #%d: A=%s B=%s" % (i + 1, na, nb))
             return 1
-        if ka.get("ALL") == kb.get("ALL"):
+        if ka["ALL"] == kb["ALL"]:
             continue
         fields = [k for k in DIGEST_FIELDS if ka.get(k) != kb.get(k)]
         if first is None:
@@ -154,7 +221,10 @@ def compare_digests(args):
         for k in fields:
             cnt, fe = by_field.get(k, (0, na))
             by_field[k] = (cnt + 1, fe)
-    if len(A) != len(B):
+    print("digest events: A=%d B=%d" % (na_count, nb_count))
+    ia = check_manifest(args.dir_a, "digest", na_count)
+    ib = check_manifest(args.dir_b, "digest", nb_count)
+    if na_count != nb_count or ia.get("frames_run") != ib.get("frames_run"):
         print("event counts differ")
         status = 1
     if first is None:
@@ -171,7 +241,15 @@ def compare_digests(args):
     return 1
 
 
-def main():
+def main(argv=None):
+    try:
+        return run(argv)
+    except (DumpFormatError, OSError) as err:
+        print("ERROR: %s" % err, file=sys.stderr)
+        return 2
+
+
+def run(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir_a")
     ap.add_argument("dir_b")
@@ -180,7 +258,7 @@ def main():
     ap.add_argument("--summary", action="store_true",
                     help="also print, per differing field/section, how many events differ and the first one")
     ap.add_argument("--sections", default="", help="only compare these sections, e.g. CPU,PPU,RAM")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     for d in (args.dir_a, args.dir_b):
         if not os.path.isdir(d):
@@ -188,7 +266,10 @@ def main():
             return 2
     wanted = {s.strip().upper() for s in args.sections.split(",") if s.strip()}
 
-    if os.path.exists(os.path.join(args.dir_a, "digest.txt")) and os.path.exists(os.path.join(args.dir_b, "digest.txt")):
+    has_digest = [os.path.exists(os.path.join(d, "digest.txt")) for d in (args.dir_a, args.dir_b)]
+    if has_digest[0] != has_digest[1]:
+        raise DumpFormatError("one folder holds a digest and the other full dumps")
+    if all(has_digest):
         print("A: %s" % args.dir_a)
         print("B: %s" % args.dir_b)
         return compare_digests(args)
@@ -206,6 +287,10 @@ def main():
                 status = 1
 
     ev_a, ev_b = read_events(args.dir_a), read_events(args.dir_b)
+    for d, ev in ((args.dir_a, ev_a), (args.dir_b, ev_b)):
+        if not os.path.exists(os.path.join(d, "events.txt")):
+            raise DumpFormatError("%s: events.txt is missing" % d)
+        check_manifest(d, "dump", len(ev))
     set_a, set_b = set(ev_a), set(ev_b)
     only_a = [n for n in ev_a if n not in set_b]
     only_b = [n for n in ev_b if n not in set_a]

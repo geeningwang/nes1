@@ -1425,3 +1425,12 @@ EMUCMDTABLE* GetEmuCommandById(int cmd)
 	}
 	return NULL;
 }
+
+// State dump (fceux_dump.cpp): the serial-read state of the controller ports.
+void NesDump_IoState(uint8* o)
+{
+	memset(o, 0, 0x10);
+	o[0] = joy_readbit[0];  o[1] = joy_readbit[1];
+	o[2] = F4ReadBit[0];    o[3] = F4ReadBit[1];   // the Famicom four-player adapter (SIFC_4PLAYER)
+	o[4] = LastStrobe;
+}

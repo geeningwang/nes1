@@ -284,7 +284,7 @@ void cpu_6502::mem_write(unsigned short addr, unsigned char val)
 			joy_readbit[0] = joy_readbit[1] = 0;
 			joy_fc_readbit[0] = joy_fc_readbit[1] = 0;
 		}
-		last_strobe = val;
+		last_strobe = val & 1;
 		return;
 	}
 	// $6000-$7FFF work RAM; writes to PRG ROM ($8000-$FFFF) and unmapped space are ignored

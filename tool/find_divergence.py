@@ -16,6 +16,7 @@ but also finds differences inside frames that disappear again before the frame e
 Exit status: 0 = no divergence found, 1 = divergence found, 2 = a run failed.
 """
 import argparse
+import itertools
 import os
 import shutil
 import subprocess
@@ -57,18 +58,24 @@ def run_both(args, tag, frames, extra):
 
 
 def first_digest_difference(da, db):
-    A, B = cd.read_digest(da), cd.read_digest(db)
-    if not A or not B:
+    count = [0, 0]
+    result = None
+    for i, (ea, eb) in enumerate(itertools.zip_longest(cd.iter_digest(da), cd.iter_digest(db))):
+        count[0] += ea is not None
+        count[1] += eb is not None
+        if result is None and ea is not None and eb is not None:
+            if ea[0] != eb[0]:
+                result = ("sequence", i, ea, eb, [])
+            elif ea[1]["ALL"] != eb[1]["ALL"]:
+                fields = [k for k in cd.DIGEST_FIELDS if ea[1].get(k) != eb[1].get(k)]
+                result = ("state", i, ea, eb, fields)
+    if not count[0] or not count[1]:
         return ("empty digest", 0, None, None, [])
-    for i in range(min(len(A), len(B))):
-        if A[i][0] != B[i][0]:
-            return ("sequence", i, A[i], B[i], [])
-        if A[i][1].get("ALL") != B[i][1].get("ALL"):
-            fields = [k for k in cd.DIGEST_FIELDS if A[i][1].get(k) != B[i][1].get(k)]
-            return ("state", i, A[i], B[i], fields)
-    if len(A) != len(B):
-        return ("count", min(len(A), len(B)), None, None, [])
-    return None
+    cd.check_manifest(da, "digest", count[0])
+    cd.check_manifest(db, "digest", count[1])
+    if result is None and count[0] != count[1]:
+        return ("count", min(count), None, None, [])
+    return result
 
 
 def describe(d):
@@ -97,6 +104,14 @@ def trace_fields(line):
 
 
 def main():
+    try:
+        return run()
+    except (cd.DumpFormatError, OSError) as err:
+        print("ERROR: %s" % err)
+        return 2
+
+
+def run():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--nes1", required=True)
     ap.add_argument("--fceux", required=True)

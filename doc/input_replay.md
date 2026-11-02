@@ -56,8 +56,9 @@ authentication. The converter separately checks the original FM2 ROM MD5.
   and the frame numbers of dumps and traces keep counting through a reset or power cycle.
 - Versioned EOF is an error if `--frames` exceeds the record count.
 
-The state dump remains **NESDUMP 2**. Input format version 1 does not mean that
-the planned NESDUMP 3 extensions are implemented.
+The state dump is **NESDUMP 3** (work RAM, logical nametables, controller serial state and
+pending-interrupt state were added; see [state_dump.md](state_dump.md)). It is versioned separately
+from the NESINPUT format.
 
 Reset and power execution is verified by `tool/check_reset_replay.py` (the `reset_state`
 probe, 90 frames with four command frames) and by movies with commands, which must equal
@@ -115,5 +116,5 @@ ctest --test-dir <test-build> -C Release --output-on-failure
 ```
 
 The run manifest reports supplied/applied input frame counts, EOF policy and
-controller attachments. Next steps are verified reset/power execution and
-NESDUMP 3, followed by the new runtime's replay adapter.
+controller attachments. Reset/power execution and NESDUMP 3 are done; the next step is the
+new runtime's replay adapter.

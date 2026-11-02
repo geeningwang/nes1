@@ -32,6 +32,7 @@ int   g_nesdump_active   = 0;
 int   g_nesdump_insn_hook = 0;
 uint8 g_nesdump_apu[0x18] = { 0 };
 extern void NesDump_ApuState(uint8* out);   // sound.cpp
+extern void NesDump_IoState(uint8* out);    // input.cpp
 
 static int g_ov[4] = { 0, 0, 0, 0 };
 
@@ -88,7 +89,23 @@ static void fill(nesdump::State& s)
 	memcpy(s.apu, g_nesdump_apu, sizeof(s.apu));
 	NesDump_ApuState(s.apuz);
 	if (RAM) memcpy(s.ram, RAM, 0x800);
+	for (uint32 a = 0x6000; a < 0x8000; ++a) {
+		uint8* pg = Page[a >> 11];
+		s.wram[a - 0x6000] = pg ? pg[a] : 0xFF;
+	}
 	memcpy(s.nt, NTARAM, 0x800);
+	for (uint32 a = 0; a < 0x1000; ++a) {
+		uint8* pg = vnapage[a >> 10];
+		s.ntv[a] = pg ? pg[a & 0x3FF] : 0xFF;
+	}
+	NesDump_IoState(s.io);
+	{
+		// FCEUX's NMI request is delayed in two steps (IQNMI2 -> IQNMI); report them as armed / due.
+		const uint32 q = X.IRQlow;
+		s.irq[0] = (q & FCEU_IQNMI) ? 2 : (q & FCEU_IQNMI2) ? 1 : 0;
+		s.irq[1] = (q & ~(uint32)(FCEU_IQNMI | FCEU_IQNMI2 | FCEU_IQRESET | FCEU_IQTEMP)) ? 1 : 0;
+		s.irq[2] = X.jammed ? 1 : 0;
+	}
 	// Architectural palette RAM: $3F04/$3F08/$3F0C are separate entries, kept in UPALRAM.
 	memcpy(s.pal, PALRAM, 0x20);
 	s.pal[0x04] = UPALRAM[0];  s.pal[0x08] = UPALRAM[1];  s.pal[0x0C] = UPALRAM[2];

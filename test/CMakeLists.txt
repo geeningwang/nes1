@@ -11,10 +11,20 @@ else()
   target_compile_options(input_check PRIVATE -Wall -Wextra -Werror)
 endif()
 
+add_executable(dump_check dump_check.cpp)
+if(MSVC)
+  target_compile_options(dump_check PRIVATE /W4 /WX)
+else()
+  target_compile_options(dump_check PRIVATE -Wall -Wextra -Werror)
+endif()
+
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME input_contract
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tool/test_input.py"
           --checker "$<TARGET_FILE:input_check>")
+add_test(NAME dump_format_contract
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tool/test_dump_format.py"
+          --checker "$<TARGET_FILE:dump_check>")
 add_test(NAME comparison_contract
   COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}" -p "test_*.py" -v)
