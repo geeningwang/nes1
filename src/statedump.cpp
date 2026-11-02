@@ -55,7 +55,7 @@ struct NesDumpAccess {
 		s.apuz[0] = apu.pulse[0].length;  s.apuz[1] = apu.pulse[1].length;
 		s.apuz[2] = apu.tri.length;       s.apuz[3] = apu.noise.length;
 		s.apuz[4] = apu.fcnt;  s.apuz[5] = apu.irq_mode;  s.apuz[6] = apu.sirq;
-		s.apuz[7] = apu.reg_shadow[0x15] & 0x1F;
+		s.apuz[7] = apu.ch_enable;
 		for (int k = 0; k < 4; ++k) s.apuz[8 + k] = (unsigned char)((unsigned)apu.fhcnt >> (8 * k));
 		s.apuz[12] = (unsigned char)apu.dmc_addr;  s.apuz[13] = (unsigned char)(apu.dmc_addr >> 8);
 		s.apuz[14] = (unsigned char)apu.dmc_size;  s.apuz[15] = (unsigned char)(apu.dmc_size >> 8);

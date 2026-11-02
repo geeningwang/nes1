@@ -15,6 +15,7 @@ const char* NesDump_RomPath();
 const char* NesDump_MoviePath();
 int         NesDump_Frames();
 uint32      NesDump_Input(int frame);
+int         NesDump_Command(int frame);        // movie command bits: 1 = reset, 2 = power
 bool        NesDump_FourScore();
 int         NesDump_InputPort(int port);
 void        NesDump_Close();

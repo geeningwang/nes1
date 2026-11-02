@@ -16,7 +16,9 @@ public:
 	void set_ppu(ppu_2c02* p);
 	void set_apu(apu_2a03* a);
 
-	void reset();
+	void reset();               // power-on reset: registers, S=$FD, PC from the vector
+	void hot_reset();           // the RESET button: PC from the vector, P=I; A, X, Y, S, RAM and the cycle count are kept
+	void power();               // a full power cycle: everything back to the power-on state, RAM pattern included
 	bool step(bool log);
 	bool nmi();                 // enter the NMI handler; false (and nothing happens) while jammed
 	void arm_delayed_nmi();     // $2000 enabled NMI during vblank: taken after the next instruction (spec O-38)

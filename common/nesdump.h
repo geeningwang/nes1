@@ -199,6 +199,12 @@ struct Config {
 		return input.at(frame).pads;
 	}
 
+	// Movie command bits for the frame (1 = soft reset, 2 = power cycle), applied before the frame runs, power first.
+	uint8_t command_at(int frame) const
+	{
+		return input.at(frame).commands;
+	}
+
 	// Legacy "P1 P2" hex bytes or the versioned NESINPUT 1 contract in doc/input_replay.md.
 	bool load_input(std::string& err)
 	{

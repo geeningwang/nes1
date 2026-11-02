@@ -53,7 +53,7 @@ class InputTests(unittest.TestCase):
 
     def test_versioned_pads_metadata_identity_and_eof(self):
         text = self.normalized()
-        self.assertIn("pads1=08040201 fourscore=1 ports=1,1,3", self.run_case(text, True))
+        self.assertIn("pads1=08040201 command1=00 fourscore=1 ports=1,1,3", self.run_case(text, True))
         self.run_case(text, frames=2)
         self.rom.write_bytes(b"wrong ROM")
         self.run_case(text)
@@ -66,8 +66,13 @@ class InputTests(unittest.TestCase):
             with self.subTest(mutated=mutated[:80]):
                 self.run_case(mutated)
 
-    def test_commands_are_not_silently_discarded(self):
-        for command in ("01", "02", "03", "08", "FF"):
+    def test_reset_and_power_commands_are_parsed(self):
+        for command in ("01", "02", "03"):
+            with self.subTest(command=command):
+                self.assertIn("command1=" + command, self.run_case(self.normalized(command + " 00 00 00 00\n"), True))
+
+    def test_unsupported_commands_are_not_silently_discarded(self):
+        for command in ("04", "08", "10", "FF"):
             with self.subTest(command=command):
                 self.run_case(self.normalized(command + " 00 00 00 00\n"))
 

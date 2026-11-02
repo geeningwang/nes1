@@ -63,6 +63,7 @@ const char* NesDump_RomPath() { return g_cfg.rom.c_str(); }
 const char* NesDump_MoviePath() { return g_cfg.movie_file.c_str(); }
 int         NesDump_Frames()  { return g_cfg.frames; }
 uint32      NesDump_Input(int frame) { return g_cfg.input_at(frame); }
+int         NesDump_Command(int frame) { return g_cfg.command_at(frame); }
 bool        NesDump_FourScore() { return g_cfg.input.fourscore; }
 int         NesDump_InputPort(int port) { return g_cfg.input.ports[port]; }
 

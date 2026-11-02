@@ -50,14 +50,18 @@ authentication. The converter separately checks the original FM2 ROM MD5.
   from Four Score; some movies attach both.
 - `ram_init`: currently only 0.
 - Records: five hex bytes, `COMMAND P1 P2 P3 P4`.
-- Command bits: reset=01, power=02. They are preserved by the converter, but
-  **execution is not implemented yet**: both normalized runners reject any file
-  containing nonzero commands before emulation, identifying its replay frame.
-  Other command bits are rejected too, never ignored.
+- Command bits: reset=01, power=02, applied at the start of their frame, power before
+  reset (spec O-41). Any other bit, such as the FDS disk commands, is rejected when the
+  file is read, never ignored. A command frame still counts as an ordinary replay frame,
+  and the frame numbers of dumps and traces keep counting through a reset or power cycle.
 - Versioned EOF is an error if `--frames` exceeds the record count.
 
 The state dump remains **NESDUMP 2**. Input format version 1 does not mean that
 the planned NESDUMP 3 extensions are implemented.
+
+Reset and power execution is verified by `tool/check_reset_replay.py` (the `reset_state`
+probe, 90 frames with four command frames) and by movies with commands, which must equal
+native FCEUX playback: see `doc/parity_spec.md` O-41.
 
 ## Conversion
 

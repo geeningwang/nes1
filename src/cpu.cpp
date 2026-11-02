@@ -457,8 +457,37 @@ void cpu_6502::reset()
 	// Do NOT charge cycles here — FCEUX processes the reset vector fetch inside
 	// X6502_Run() at zero extra cost, so cycle 0 is the first instruction.
 	pending_instruction_cycles = 0;
+	nmi_state = 0;
 
 	return;
+}
+
+// FCEUX: X6502_Reset() raises the reset line, which the next X6502_Run() services at no cost
+// by loading the vector, clearing the jam and setting P=I. A/X/Y/S are untouched, any armed
+// NMI or IRQ request is dropped (spec O-41).
+void cpu_6502::hot_reset()
+{
+	rp = 0x24;
+	rpi = rp;
+	jammed = false;
+	nmi_state = 0;
+	rpc = *((unsigned short *)(mem + 0xfffc));
+	data_bus = (unsigned char)(rpc >> 8);
+}
+
+// FCEUX: PowerNES() = the RAM pattern, InitializeInput(), X6502_Power() and timestampbase=0 (spec O-41).
+void cpu_6502::power()
+{
+	ra = rx = ry = 0;
+	for (int i = 0; i < 0x800; ++i)
+		mem[i] = (i & 0x04) ? 0xFF : 0x00;
+	cycle = 0;
+	apu_cycle = 0;
+	joypad1_state = joypad2_state = joypad3_state = joypad4_state = 0;
+	joy_readbit[0] = joy_readbit[1] = 0;
+	joy_fc_readbit[0] = joy_fc_readbit[1] = 0;
+	last_strobe = 0;
+	reset();
 }
 
 bool cpu_6502::step(bool log)

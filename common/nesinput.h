@@ -184,12 +184,6 @@ struct InputFile {
 		if (versioned && (size_t)count > frames.size()) {
 			err = "requested run exceeds replay length"; return false;
 		}
-		for (size_t i = 0; i < frames.size(); ++i) {
-			if (frames[i].commands) {
-				err = "replay frame " + std::to_string(i + 1) + ": reset/power execution is not implemented yet";
-				return false;
-			}
-		}
 		return true;
 	}
 

@@ -117,6 +117,12 @@ public:
 	// Set nametable mirroring (false=horizontal, true=vertical)
 	void set_mirroring(bool vertical);
 
+	// FCEUPPU_Reset(): the registers, latches and address/toggle state go to zero; VRAM, OAM, palette
+	// and the fine X scroll are kept (spec O-41).
+	void reset_registers();
+	// FCEUPPU_Power(): reset_registers() plus nametable RAM, palette RAM and OAM cleared.
+	void power();
+
 	// Per-scanline rendering support:
 	//   begin_frame()         – call before visible scanlines; clears spr0-hit, seeds scrolls
 	//   check_sprite0_hit(sl) – call before each scanline's CPU cycles

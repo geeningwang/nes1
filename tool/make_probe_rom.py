@@ -804,6 +804,103 @@ delay:
 )
 
 
+# Leaves a recognisable machine state, then reports what a reset or power cycle did to it. The first boot
+# (no magic in RAM) arms the state and spins; a boot that finds the magic is a soft reset and records the
+# retained A/X/Y/S/P, then tries to load a length counter without enabling the channel.
+PROBES["reset_state"] = ("state kept or cleared by a soft reset and a power cycle", """
+reset:
+    STA $0700
+    STX $0701
+    STY $0702
+    TSX
+    STX $0703
+    PHP
+    PLA
+    STA $0704
+    SEI
+    CLD
+    LDX #$FF
+    TXS
+    LDA $4015
+    STA $0705
+    LDA $07F0
+    CMP #$A5
+    BNE first_boot
+    JMP resumed
+first_boot:
+    LDA #$A5
+    STA $07F0
+""" + wait_vbl(1) + wait_vbl(2) + """
+    LDA #$14
+    STA $2000
+    LDA #$06
+    STA $2001
+    LDA #$3F
+    STA $2006
+    LDA #$20
+    STA $2006
+    LDA #$07
+    STA $2005
+    LDA #$5A
+    STA $2005
+    LDA #$23
+    STA $2003
+    LDA #$77
+    STA $2004
+    LDA $2007
+    LDA #$3F
+    STA $4000
+    LDA #$08
+    STA $4001
+    LDA #$C0
+    STA $4002
+    STA $4006
+    LDA #$0F
+    STA $4015
+    LDA #$FF
+    STA $4003
+    STA $4007
+    STA $400B
+    STA $400F
+    LDA #$8F
+    STA $4010
+    LDA #$20
+    STA $4011
+    LDA #$10
+    STA $4012
+    LDA #$01
+    STA $4013
+    LDA #$1F
+    STA $4015
+    LDA #$40
+    STA $4017
+    LDA #$12
+    STA $2005
+    SED
+    SEC
+    LDX #$C0
+    TXS
+    LDA #$11
+    LDX #$22
+    LDY #$33
+armed:
+    JMP armed
+resumed:
+    LDA $2002
+    STA $0706
+    LDA $2004
+    STA $0707
+    LDA $2007
+    STA $0708
+    LDA #$18
+    STA $4003
+    LDA $4015
+    STA $0709
+done:
+    JMP done
+""" + STUBS + vectors())
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "test", "probe")

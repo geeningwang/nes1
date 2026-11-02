@@ -729,6 +729,12 @@ static int RunHeadlessDump(int argc, char *argv[])
 	for(int i = 0; i < nframes; ++i)
 	{
 		pads = NesDump_Input(i + 1);
+		if (!native_movie) {
+			// A movie applies its commands at the start of its frame, power before reset (movie.cpp, FCEUMOV_AddInputState).
+			const int command = NesDump_Command(i + 1);
+			if (command & 2) PowerNES();
+			if (command & 1) ResetNES();
+		}
 		uint8 *gfx = 0;
 		int32 *sound = 0;
 		int32 ssize = 0;

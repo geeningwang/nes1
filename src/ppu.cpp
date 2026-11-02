@@ -214,6 +214,25 @@ ppu_2c02::ppu_2c02()
 	memset(nt_snapshot, 0, sizeof(nt_snapshot));
 }
 
+void ppu_2c02::reset_registers()
+{
+	reg_ctrl = reg_mask = reg_status = reg_oam_addr = 0;
+	io_latch = 0;
+	oam_spl = 0;
+	v = t = 0;
+	w = 0;
+	data_buf = 0;
+	scroll_x_reg = scroll_y_reg = scroll_nt = 0;
+}
+
+void ppu_2c02::power()
+{
+	memset(mem + 0x2000, 0, 0x800);
+	memset(mem + 0x3F00, 0, 0x20);
+	memset(oam, 0, 256);
+	reset_registers();
+}
+
 ppu_2c02::~ppu_2c02()
 {
 	delete[] mem;
@@ -751,10 +770,15 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 	case 0x2007:  // PPUDATA
 	{
 		unsigned char result = data_buf;
-		data_buf = ppu_mem_read(v);
-		// Palette reads are not buffered
-		if ((v & 0x3FFF) >= 0x3F00)
-			result = data_buf;
+		if ((v & 0x3FFF) >= 0x3F00) {
+			// Palette reads are not buffered and leave the I/O latch alone; the buffer is loaded from the
+			// nametable underneath the palette, and greyscale masks the value read (spec O-42).
+			result = ppu_mem_read(v) & ((reg_mask & 1) ? 0x30 : 0xFF);
+			data_buf = ppu_mem_read((unsigned short)((v & 0x3FFF) - 0x1000));
+		} else {
+			data_buf = ppu_mem_read(v);
+			io_latch = result;
+		}
 		if ((reg_mask & 0x18) && vis_scanline)
 		{
 			// A read during rendering steps V like a Y increment instead of by 1 or 32 (spec O-34).
@@ -770,7 +794,6 @@ unsigned char ppu_2c02::cpu_read(unsigned short addr)
 		}
 		else
 			v += (reg_ctrl & 0x04) ? 32 : 1;
-		io_latch = result;
 		return result;
 	}
 	default:      // write-only registers read back the I/O latch

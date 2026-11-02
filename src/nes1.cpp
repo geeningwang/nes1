@@ -320,11 +320,14 @@ bool frameIntervalElapsed()
 int g_ppu_budget = 0;   // CPU budget in PPU dots (1 CPU cycle = 3 dots); negative = overshoot debt
 int g_line_ov[4] = { 0, 0, 0, 0 };   // overshoot after each time slice of the current visible line (debug aid)
 
+int g_kook = 0;      // alternating pre-render length (0 -> 16 PPU, 1 -> 15 PPU); a reset restarts the alternation
+int g_ppudead = 2;   // frames still to run without VBL after power-on or reset (FCEUX's ppudead)
+
 static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_samples = nullptr)
 {
 	// Persistent state (survives across frames, like FCEUX's global counters)
 	int& ppu_budget = g_ppu_budget;
-	static int kook          = 0;  // alternating pre-render length (0 → 16 PPU, 1 → 15 PPU)
+	int& kook = g_kook;
 
 	// Convert PPU cycles to CPU cycles (with accumulation) and run instructions.
 	// Overshoot from a completed instruction is automatically absorbed by the
@@ -447,6 +450,27 @@ static void run_one_frame(bool suppress_vbl = false, std::vector<short>* audio_s
 	}
 }
 
+// Movie commands, applied before the frame they belong to (spec O-41). FCEUX's ResetNES() restarts the
+// sound, PPU and CPU but keeps RAM; PowerNES() also re-creates RAM and every device, and restarts the cycle count.
+static void machine_reset()
+{
+	cpu.hot_reset();
+	ppu.reset_registers();
+	apu.reset();
+	g_kook = 0;
+	g_ppudead = 2;
+}
+
+static void machine_power()
+{
+	cpu.power();
+	ppu.power();
+	apu.power();
+	g_ppu_budget = 0;
+	g_kook = 0;
+	g_ppudead = 2;
+}
+
 // Headless state-dump run: "<rom> --dump <outdir> [options]" (see doc/state_dump.md).
 // Emulates cfg.frames frames from reset with no window, audio or input, writing a
 // text dump of the whole machine state at the requested frame/scanline/PC events.
@@ -480,8 +504,13 @@ static int run_dump_mode(const nesdump::Config& cfg)
 		cpu.joypad2_state = (unsigned char)(pads >> 8);
 		cpu.joypad3_state = (unsigned char)(pads >> 16);
 		cpu.joypad4_state = (unsigned char)(pads >> 24);
+		const uint8_t command = cfg.command_at(f);
+		if (command & 2) machine_power();
+		if (command & 1) machine_reset();
+		const bool dead = g_ppudead > 0;   // the first two frames after power-on or reset are ppudead, as in FCEUX
+		if (dead) --g_ppudead;
 		dumper.begin_frame();
-		run_one_frame(/*suppress_vbl=*/(f <= 2));   // frames 1-2 are ppudead, as in FCEUX
+		run_one_frame(dead);
 		dumper.on_frame_end();
 	}
 

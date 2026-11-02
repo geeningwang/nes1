@@ -189,7 +189,7 @@ unsigned char NoiseChannel::output() const
 // apu_2a03
 // ─────────────────────────────────────────
 apu_2a03::apu_2a03()
-    : fhcnt(FRAME_STEP_UNITS), fcnt(0), irq_mode(0), sirq(0),
+    : fhcnt(FRAME_STEP_UNITS), fcnt(0), irq_mode(0), ch_enable(0), sirq(0),
       dmc_format(0), dmc_dac(0), dmc_addr_latch(0), dmc_size_latch(0), dmc_addr(0), dmc_size(0),
       dmc_shift(0), dmc_bits(0), dmc_buf(0), dmc_have_sample(false), dmc_have_dma(false),
       dmc_acc(1), dmc_period(428), sample_accum(0.0)
@@ -203,6 +203,34 @@ apu_2a03::apu_2a03()
     noise.shift_reg = 1;  // LFSR starts at 1
 }
 
+void apu_2a03::reset()
+{
+    for (PulseChannel& p : pulse) { p.enabled = false; p.length = 0; }
+    tri.enabled = false;    tri.length = 0;
+    noise.enabled = false;  noise.length = 0;
+    noise.shift_reg = 1;
+    fhcnt = FRAME_STEP_UNITS;
+    fcnt = 0;
+    irq_mode = 0;
+    ch_enable = 0;
+    sirq = 0;
+    dmc_format = 0;
+    dmc_dac = 0;
+    dmc_addr_latch = dmc_size_latch = 0;
+    dmc_addr = 0;
+    dmc_size = 0;
+    dmc_shift = dmc_bits = 0;
+    dmc_have_sample = dmc_have_dma = false;
+    dmc_acc = 1;
+}
+
+void apu_2a03::power()
+{
+    const unsigned char dma_byte = dmc_buf;
+    *this = apu_2a03();
+    dmc_buf = dma_byte;
+}
+
 void apu_2a03::write(unsigned short addr, unsigned char val)
 {
     if (addr >= 0x4000 && addr <= 0x4017) reg_shadow[addr - 0x4000] = val;
@@ -212,6 +240,7 @@ void apu_2a03::write(unsigned short addr, unsigned char val)
     else if (addr <= 0x400F)  noise.write(addr, val);
     else if (addr == 0x4015)
     {
+        ch_enable = val & 0x1F;
         pulse[0].enabled = (val & 0x01) != 0;
         pulse[1].enabled = (val & 0x02) != 0;
         tri.enabled      = (val & 0x04) != 0;

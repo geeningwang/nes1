@@ -141,6 +141,11 @@ public:
     // byte.  Returns the CPU cycles stolen by a DMC fetch.
     unsigned int advance(unsigned int cycles, const unsigned char* mem, unsigned char& bus);
 
+    // FCEUSND_Reset(): length counters, channel enables, the frame sequencer, the IRQ flags and the DMC
+    // state go back to their reset values; the registers written before are kept (spec O-41).
+    void reset();
+    void power();                  // reset() plus the registers and the DMC period back to power-on; FCEUX keeps the DMC DMA byte
+
     // Level of the IRQ line driven by the frame counter and the DMC.
     bool irq_line() const { return (sirq & 0xC0) != 0; }
 
@@ -171,6 +176,7 @@ private:
     int            fhcnt;          // time left until the next step
     unsigned char  fcnt;           // next step, 0-3
     unsigned char  irq_mode;       // ($4017 >> 6): bit 0 = IRQ inhibit, bit 1 = 5-step mode
+    unsigned char  ch_enable;      // $4015 bits 0-4 as last written, 0 after reset
     unsigned char  sirq;           // bit 6 = frame IRQ flag, bit 7 = DMC IRQ flag
 
     // DMC

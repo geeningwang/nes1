@@ -1230,6 +1230,7 @@ void FCEUSND_Power(void)
 
         SetNESSoundMap();
         memset(PSG,0x00,sizeof(PSG));
+        memset(g_nesdump_apu,0x00,sizeof(g_nesdump_apu));
 	FCEUSND_Reset();
 
 	memset(Wave,0,sizeof(Wave));
